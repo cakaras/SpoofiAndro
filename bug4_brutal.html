@@ -380,7 +380,7 @@ function testDataURIPopup() {
     'data:text/html;charset=utf-8,<h1>Charset Data URI</h1>',
     
     // SVG data: URI (might bypass text/html block)
-    'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="100%" height="100%"><body xmlns="http://www.w3.org/1999/xhtml"><h1>SVG XSS</h1><script>alert(1)</script></body></foreignObject></svg>',
+    'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="100%" height="100%"><body xmlns="http://www.w3.org/1999/xhtml"><h1>SVG XSS</h1><script>alert(document.cookie)</script></body></foreignObject></svg>',
   ];
   
   payloads.forEach(function(payload, i) {
