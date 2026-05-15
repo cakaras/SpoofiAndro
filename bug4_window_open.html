@@ -41,7 +41,7 @@ function test1() {
   log('--- Test 1: Popup + opener ---');
   
   // Pertama tanpa user gesture (harus diblokir)
-  var w1 = window.open('https://example.com', '_blank');
+  var w1 = window.open('https://google.com', '_blank');
   log('Without gesture: w1 = ' + w1);
   
   if (w1) {
@@ -67,7 +67,7 @@ function test1() {
 function test2() {
   log('--- Test 2: Open + rapid close ---');
   
-  var w = window.open('https://example.com', '_blank');
+  var w = window.open('https://google.com', '_blank');
   if (!w) { log('Popup blocked'); return; }
   
   log('Window opened, closing in 10ms...');
