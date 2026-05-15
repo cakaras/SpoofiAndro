@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publisher URL Test</title>
+</head>
+<body>
+<h2>Bug 5: AMP/SXG Publisher URL Testing</h2>
+<p>Test bagaimana Chrome Android menampilkan publisher URL
+   dari cached/AMP pages.</p>
+
+<button onclick="test1()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 1: AMP-like header injection
+</button><br>
+<button onclick="test2()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 2: Signed Exchange simulation
+</button>
+
+<div id="log" style="margin-top:15px;font-family:monospace;font-size:12px;"></div>
+
+<script>
+function log(msg) {
+  document.getElementById('log').innerHTML += msg + '<br>';
+}
+
+// Test 1: Navigasi ke AMP cache URL yang menampilkan publisher berbeda
+function test1() {
+  log('Test 1: AMP cache URL testing');
+  log('Buka URL berikut di Chrome Android:');
+  log('');
+  
+  // Google AMP cache URLs yang menampilkan publisher URL
+  var urls = [
+    'https://www.google.com/amp/s/example.com/amp-page',
+    'https://cdn.ampproject.org/v/s/example.com/page',
+    'https://example-com.cdn.ampproject.org/c/s/example.com/page',
+  ];
+  
+  urls.forEach(u => {
+    log('<a href="' + u + '" target="_blank">' + u + '</a>');
+  });
+  
+  log('');
+  log('Perhatikan: URL mana yang ditampilkan di address bar?');
+  log('Apakah publisher URL (example.com) ditampilkan?');
+  log('Jika ya — apakah bisa dimanipulasi?');
+}
+
+// Test 2: iframe dengan manipulated referrer/headers
+function test2() {
+  log('Test 2: Header manipulation via fetch');
+  
+  // Fetch halaman dengan header yang mirip SXG
+  fetch(location.href, {
+    headers: {
+      'Accept': 'application/signed-exchange;v=b3',
+    }
+  }).then(r => {
+    log('Response type: ' + r.type);
+    log('Response URL: ' + r.url);
+    r.headers.forEach((v, k) => log('Header: ' + k + ': ' + v));
+  }).catch(e => log('Error: ' + e.message));
+}
+</script>
+</body>
+</html>

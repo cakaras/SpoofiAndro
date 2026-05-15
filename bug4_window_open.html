@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>window.open Edge Cases</title>
+</head>
+<body>
+<h2>Bug 4: window.open() Same-Tab Fallback Testing</h2>
+<p>Test edge cases saat browser menolak membuat tab baru</p>
+
+<button onclick="test1()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 1: Popup blocker + opener access
+</button><br>
+<button onclick="test2()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 2: window.open + rapid close
+</button><br>
+<button onclick="test3()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 3: about:blank opener abuse
+</button><br>
+<button onclick="test4()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 4: blob: URL cross-origin
+</button><br>
+<button onclick="test5()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 5: data: URL in window.open
+</button><br>
+<button onclick="test6()" style="padding:12px;font-size:16px;margin:5px;">
+  Test 6: Multiple rapid window.open
+</button>
+
+<div id="log" style="margin-top:15px;font-family:monospace;font-size:12px;
+  max-height:400px;overflow-y:auto;background:#f5f5f5;padding:10px;"></div>
+
+<script>
+function log(msg) {
+  document.getElementById('log').innerHTML += msg + '<br>';
+}
+
+// Test 1: Buka popup, lalu cek apakah opener masih accessible
+// setelah popup diblokir/fallback
+function test1() {
+  log('--- Test 1: Popup + opener ---');
+  
+  // Pertama tanpa user gesture (harus diblokir)
+  var w1 = window.open('https://example.com', '_blank');
+  log('Without gesture: w1 = ' + w1);
+  
+  if (w1) {
+    // Jika popup berhasil terbuka (user gesture dari button click)
+    setTimeout(() => {
+      try {
+        log('w1.opener exists: ' + !!w1.opener);
+        log('w1.opener === window: ' + (w1.opener === window));
+        log('w1.location: ' + w1.location.href);
+        
+        // Coba akses opener dari popup
+        // Ini seharusnya diblokir cross-origin
+        w1.opener.document.title = 'HIJACKED';
+        log('🔴 Opener document.title changed!');
+      } catch(e) {
+        log('Expected block: ' + e.message);
+      }
+    }, 2000);
+  }
+}
+
+// Test 2: Buka window, langsung close, cek state
+function test2() {
+  log('--- Test 2: Open + rapid close ---');
+  
+  var w = window.open('https://example.com', '_blank');
+  if (!w) { log('Popup blocked'); return; }
+  
+  log('Window opened, closing in 10ms...');
+  
+  // Close sangat cepat
+  setTimeout(() => {
+    w.close();
+    log('Window closed');
+    
+    // Cek: apakah reference masih usable?
+    setTimeout(() => {
+      try {
+        log('w.closed: ' + w.closed);
+        log('w.document: ' + w.document);
+        log('🔴 Accessed closed window document!');
+      } catch(e) {
+        log('Closed window access blocked: ' + e.message);
+      }
+    }, 100);
+  }, 10);
+}
+
+// Test 3: about:blank opener chain
+function test3() {
+  log('--- Test 3: about:blank chain ---');
+  
+  // about:blank mewarisi origin opener
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('Popup blocked'); return; }
+  
+  // Tulis script ke about:blank
+  w.document.write(`
+    <script>
+      // Dari about:blank, buka popup lagi
+      var w2 = window.open('about:blank', '_blank');
+      if (w2) {
+        w2.document.write('<h1>Level 2 about:blank</h1>');
+        w2.document.write('<p>Origin: ' + w2.document.domain + '</p>');
+        
+        // Coba akses grandparent
+        try {
+          window.opener.document.title = 'Accessed from grandchild';
+          w2.document.write('<p style="color:red;">🔴 Grandparent access works!</p>');
+        } catch(e) {
+          w2.document.write('<p>Grandparent blocked: ' + e.message + '</p>');
+        }
+      }
+    <\/script>
+  `);
+  
+  log('about:blank chain created');
+  log('Cek: berapa level about:blank bisa di-chain?');
+  log('Cek: apakah origin inheritance benar di setiap level?');
+}
+
+// Test 4: blob: URL cross-origin behavior
+function test4() {
+  log('--- Test 4: blob: URL ---');
+  
+  var html = `
+    <h1>Blob URL Page</h1>
+    <script>
+      document.write('<p>Origin: ' + document.origin + '</p>');
+      document.write('<p>URL: ' + location.href + '</p>');
+      
+      // blob: URL seharusnya punya unique opaque origin
+      // Tapi bagaimana dengan opener access?
+      try {
+        if (window.opener) {
+          document.write('<p>Opener exists: ' + !!window.opener + '</p>');
+          document.write('<p>Opener origin: ' + window.opener.location.origin + '</p>');
+          // Coba akses opener document
+          window.opener.document.title = 'blob accessed parent';
+          document.write('<p style="color:red;">🔴 Modified opener title!</p>');
+        }
+      } catch(e) {
+        document.write('<p>Opener access blocked: ' + e.message + '</p>');
+      }
+    <\/script>
+  `;
+  
+  var blob = new Blob([html], { type: 'text/html' });
+  var url = URL.createObjectURL(blob);
+  log('Blob URL: ' + url);
+  
+  var w = window.open(url, '_blank');
+  if (!w) { log('Popup blocked'); return; }
+  
+  log('Blob URL opened - check origin in new tab');
+}
+
+// Test 5: data: URL in window.open
+function test5() {
+  log('--- Test 5: data: URL ---');
+  
+  var payload = `<h1>Data URL Page</h1>
+    <p>Origin: <script>document.write(document.origin)<\/script></p>
+    <script>
+      try {
+        if (window.opener) {
+          document.write('<p>Has opener!</p>');
+          document.write('<p>Opener href: ' + window.opener.location.href + '</p>');
+          window.opener.document.title = 'data: changed parent';
+          document.write('<p style="color:red;">🔴 Modified parent!</p>');
+        }
+      } catch(e) {
+        document.write('<p>Blocked: ' + e.message + '</p>');
+      }
+    <\/script>`;
+    
+  var w = window.open('data:text/html,' + encodeURIComponent(payload), '_blank');
+  log('data: URL open result: ' + !!w);
+  if (w) {
+    log('data: URL opened! Check if it has origin access');
+  } else {
+    log('data: URL blocked in window.open (expected in modern Chrome)');
+  }
+}
+
+// Test 6: Flood window.open untuk test rate limiting
+function test6() {
+  log('--- Test 6: Rapid window.open flood ---');
+  
+  var opened = 0;
+  var blocked = 0;
+  
+  for (var i = 0; i < 20; i++) {
+    var w = window.open('about:blank', '_blank_' + i);
+    if (w) {
+      opened++;
+      w.document.write('<p>Window ' + i + '</p>');
+      w.document.write('<p>Opener accessible: ' + !!w.opener + '</p>');
+      // Close setelah log
+      setTimeout(((win) => () => win.close())(w), 500);
+    } else {
+      blocked++;
+    }
+  }
+  
+  log('Opened: ' + opened + ', Blocked: ' + blocked);
+  log('Cek: rate limiting konsisten? Ada yang lolos?');
+}
+</script>
+</body>
+</html>

