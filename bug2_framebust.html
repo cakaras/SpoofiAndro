@@ -41,7 +41,7 @@ function test1() {
           <script>
             try {
               // Iframe mencoba redirect parent ke URL berbeda
-              top.location = 'https://evil-${idx}.example.com/phish';
+              top.location = 'https://account-${idx}.google.com';
             } catch(e) {}
           <\/script>
         `;
@@ -71,7 +71,7 @@ function test2() {
         // Nested iframe mencoba redirect top
         setTimeout(() => {
           try {
-            top.location = 'https://phishing.example.com/login';
+            top.location = 'https://account.google.com/login';
           } catch(e) {
             document.write('Blocked: ' + e.message);
           }
@@ -94,7 +94,7 @@ function test3() {
   // meta refresh tidak menggunakan JavaScript
   // Apakah framebust intervention juga menangkap ini?
   iframe.srcdoc = `
-    <meta http-equiv="refresh" content="0;url=https://evil.example.com">
+    <meta http-equiv="refresh" content="0;url=https://account.google.com">
     <p>Meta refresh framebust test</p>
   `;
   document.body.appendChild(iframe);
