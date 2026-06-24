@@ -1,0 +1,26 @@
+openapi: "3.0.0"
+info:
+  title: "Customer APIs V2"
+  version: "1.0.0"
+  description: |
+    Hello **bold** dan <b>HTML tag</b> dan <img src=x>
+servers:
+  - url: https://api.sandbox.riskrecon.eu
+    variables:
+      protocol:
+        enum:
+          - https
+        default: https
+paths:
+  /v2/findings/{toe_id}:
+    get:
+      summary: Test endpoint
+      parameters:
+        - name: toe_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
