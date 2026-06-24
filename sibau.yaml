@@ -1,0 +1,12 @@
+openapi: "3.0.0"
+info:
+  title: "XYZTEST-CAKARAS-POC"
+  version: "1.0.0"
+  description: Hello **bold** test
+paths:
+  /test:
+    get:
+      summary: test
+      responses:
+        '200':
+          description: OK
